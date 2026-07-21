@@ -1,0 +1,381 @@
+# Juniper Junos rules derived from the DISA "Juniper EX Series Switches
+# Router" STIG (stigviewer.com, 102 findings: 10 CAT I, 63 CAT II, 29 CAT
+# III). V-IDs are cited in each description. Targets `show configuration |
+# display set` output.
+#
+# NOT yet live-verified against Steve's vJunos-switch GNS3 appliance —
+# several `notes:` fields below flag syntax that needs confirming once it's
+# reachable, the same way the Arista Router pack caught 4 real bugs via
+# live testing before it was trusted.
+#
+# Most rules are gated with `applies_if` on the routing protocol/feature
+# they concern, so a device that doesn't run BGP/PIM/MPLS/IPv6/etc. simply
+# never sees those rules in its results.
+#
+# Findings covering the same underlying config artifact are consolidated
+# into one rule citing multiple V-IDs, matching the approach used for the
+# Cisco and Arista router packs (e.g. several BGP/MSDP findings all just
+# check "is an import/export policy applied to this peer group" — content
+# of the policy itself can't be verified generically).
+#
+# Findings excluded outright:
+# V-253973/V-253984/V-253999/V-254010/V-254025/V-254031/V-254045 (generic
+# "enforce information flow control / disable nonessential capabilities /
+# protect against DoS" restatements with no independently checkable config
+# line — already covered concretely by the specific rules below); V-253982
+# (requires knowing which AS is the "unauthorized" one — org-specific);
+# V-253983 (Junos EX has no distinct AUX port in the Cisco sense);
+# V-253985/V-253988/V-254047 (which interfaces are "unnecessary"/"inactive"/
+# "external" is topology knowledge, not derivable from one device's
+# config); V-253989/V-253990/V-253991/V-253992/V-253993 (alternate-gateway
+# and dual-IGP management-network findings tied to a specific network
+# design this tool can't know); V-253994/V-253995 (filtering PIM
+# Register/Join from "the DR" requires knowing which neighbor that is);
+# V-253996/V-253997 (audit record location/source — covered by the NDM
+# syslog rules, not router-specific); V-254003/V-254039/V-254067/V-254068/
+# V-254069 (VPLS/VPWS L2VPN specifics — too niche and topology-dependent
+# for this lab); V-254004 (RSVP-TE refresh-reduction — niche MPLS feature,
+# low confidence in exact syntax without a live RSVP-TE lab to check
+# against); V-254005 (storm-control — duplicate of the L2S pack's rule);
+# V-254006/V-254007/V-254008/V-254012 (QoS/DoD Instruction 8551.1 profiles
+# defined in external DoD documents this tool has no access to);
+# V-254011 (fragmented-ICMP-to-router is a narrow firewall-filter match
+# that duplicates the broader default-deny/filter-applied rules below);
+# V-254015/V-254016/V-254046 (which prefixes count as "IP core" or "bogon"
+# is an org-maintained list, not a fixed pattern); V-254018/V-254019/
+# V-254020/V-254021/V-254049 (dedicated-OOBM-circuit design is topology/
+# procurement, not config); V-254022 (anti-spoofing is already covered by
+# the uRPF rule below); V-254026/V-254027 (key uniqueness-across-peers and
+# ≤180-day rotation cadence can't be verified from static config);
+# V-254030 (Junos ZTP is driven by DHCP options at boot time, not a
+# persistent config toggle — matches the same exclusion reasoning as
+# Arista's zero-touch finding); V-254040/V-254041/V-254042/V-254043/
+# V-254050/V-254051/V-254052 (multicast-scale tuning and per-peer MSDP
+# acceptance are niche/structural, not generically checkable); V-254060/
+# V-254061/V-254070 (which loopback address to use for peering is a
+# topology decision); V-254064/V-254065/V-254066 (VRF Route Target/
+# Route Distinguisher "appropriateness" is an org numbering-plan decision);
+# V-254074 (open-ended "per DoD guidance" catch-all).
+# --- BGP ---
+- id: junos-stig-v253974-978-bgp-policy-applied
+  description: >-
+    V-253974/V-253975/V-253976/V-253977/V-253978: Junos BGP groups must
+    have both import and export routing policy applied (bogon/local-AS/
+    customer-prefix/AS_PATH filtering) rather than accepting or
+    advertising routes unconditionally.
+  severity: high
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols bgp group \S+'
+  require:
+    - '(?im)^set protocols bgp group \S+ import \S+'
+    - '(?im)^set protocols bgp group \S+ export \S+'
+  notes: >-
+    Confirms an import and export policy are attached to at least one BGP
+    group — it cannot verify the policies actually implement bogon/
+    local-AS/customer-prefix/AS_PATH filtering correctly.
+  fix: |
+    set policy-options policy-statement BGP-IN term reject-bogons from route-filter 0.0.0.0/8 orlonger reject
+    set protocols bgp group EXTERNAL import BGP-IN
+    set protocols bgp group EXTERNAL export BGP-OUT
+
+- id: junos-stig-v254037-038-bgp-prefix-limit
+  description: "V-254037/V-254038: Junos BGP peers must use a prefix-limit to protect against route table flooding."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols bgp group \S+'
+  require:
+    - '(?im)^set protocols bgp group \S+ family inet unicast prefix-limit maximum \d+'
+  fix: |
+    set protocols bgp group EXTERNAL family inet unicast prefix-limit maximum 500000
+    set protocols bgp group EXTERNAL family inet unicast prefix-limit teardown 90
+
+- id: junos-stig-v254044-bgp-gtsm
+  description: "V-254044: Junos must enable the Generalized TTL Security Mechanism (GTSM) for BGP sessions."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols bgp group \S+'
+  require:
+    - '(?im)^set protocols bgp group \S+ ttl \d+'
+  fix: |
+    set protocols bgp group EXTERNAL ttl 1
+
+# --- Routing protocol authentication ---
+- id: junos-stig-v254001-002-routing-protocol-auth
+  description: >-
+    V-254001/V-254002: Junos must authenticate routing protocol messages
+    (BGP/OSPF) using an encrypted, FIPS-validated method rather than
+    running unauthenticated.
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols (bgp group \S+|ospf area \S+ interface \S+)'
+  require:
+    - '(?im)^set protocols (bgp group \S+ authentication-algorithm|ospf area \S+ interface \S+ authentication)'
+  fix: |
+    set protocols bgp group EXTERNAL authentication-algorithm hmac-sha-1-96
+    set protocols bgp group EXTERNAL authentication-key "REPLACE_ME"
+
+- id: junos-stig-v254028-ldp-auth
+  description: "V-254028: Junos must authenticate LDP sessions using a FIPS-approved algorithm."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols ldp'
+  require:
+    - '(?im)^set protocols ldp (interface \S+ |session \S+ )?authentication-key'
+  notes: Junos LDP authentication can be scoped globally, per-session, or per-interface — verify which stanza your vJunos-switch build actually accepts.
+  fix: |
+    set protocols ldp session 192.168.100.2 authentication-key "REPLACE_ME"
+
+- id: junos-stig-v254029-msdp-auth
+  description: "V-254029: Junos must authenticate all received MSDP packets."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols msdp'
+  require:
+    - '(?im)^set protocols msdp group \S+ peer \S+ authentication-key'
+  fix: |
+    set protocols msdp group PEERS peer 192.168.100.3 authentication-key "REPLACE_ME"
+
+- id: junos-stig-v253979-981-msdp-sa-filter
+  description: >-
+    V-253979/V-253980/V-253981: Junos MSDP peers must have SA-filtering
+    policy applied and limit the number of accepted source-active
+    messages, rather than accepting all SAs unconditionally.
+  severity: high
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols msdp'
+  require:
+    - '(?im)^set protocols msdp group \S+ peer \S+ (import|export) \S+'
+  notes: Confirms filtering policy is attached; cannot verify the policy content or the per-peer SA count limit.
+  fix: |
+    set policy-options policy-statement MSDP-SA-IN term limit from route-filter 224.0.0.0/4 orlonger accept
+    set protocols msdp group PEERS peer 192.168.100.3 import MSDP-SA-IN
+
+# --- Multicast (PIM) ---
+- id: junos-stig-v253986-pim-neighbor-filter
+  description: "V-253986: Junos must bind a PIM neighbor filter to PIM-enabled interfaces to reject unauthorized PIM neighbors."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols pim interface'
+  require:
+    - '(?im)^set protocols pim interface \S+ neighbor-policy \S+'
+  fix: |
+    set policy-options policy-statement PIM-NEIGHBORS term allowed from route-filter 192.168.100.0/24 orlonger accept
+    set protocols pim interface ge-0/0/1.0 neighbor-policy PIM-NEIGHBORS
+
+- id: junos-stig-v253987-multicast-boundary
+  description: "V-253987: Junos must establish administrative boundaries for scoped multicast traffic to prevent it leaking between domains."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols pim interface'
+  require:
+    - '(?im)^set protocols pim interface \S+ multicast-scoping'
+  notes: Junos multicast admin-scoping syntax is unverified against a real vJunos-switch config — confirm this is the right stanza once the lab appliance is reachable; low confidence entry.
+  fix: |
+    set protocols pim interface ge-0/0/1.0 multicast-scoping
+
+# --- Anti-spoofing / firewall filter hardening ---
+- id: junos-stig-v254009-default-deny-filter
+  description: "V-254009: Junos firewall filters must deny traffic by default and only allow explicitly authorized exceptions."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set firewall family inet filter'
+  require:
+    - '(?im)^set firewall family inet filter \S+ term \S+ then discard$'
+  fix: |
+    set firewall family inet filter PROTECT-RE term deny-rest then discard
+
+- id: junos-stig-v254013-014-filter-applied-to-interface
+  description: "V-254013/V-254014: Junos must apply a firewall filter at ingress on external-facing interfaces and at egress toward internal networks."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set firewall family inet filter'
+  require:
+    - '(?im)^set interfaces \S+ unit \d+ family inet filter (input|output) \S+'
+  fix: |
+    set interfaces ge-0/0/0 unit 0 family inet filter input EXTERNAL-IN
+
+- id: junos-stig-v254017-urpf
+  description: "V-254017: Junos must configure unicast Reverse Path Forwarding (uRPF) in loose mode on CE-facing interfaces to restrict spoofed source addresses."
+  severity: medium
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set interfaces \S+ unit \d+ family inet rpf-check'
+  fix: |
+    set interfaces ge-0/0/0 unit 0 family inet rpf-check mode loose
+
+- id: junos-stig-v254023-024-ip-options
+  description: "V-254023/V-254024: Junos must block or ignore packets containing IP options destined to the router."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set firewall family inet filter'
+  require:
+    - '(?im)^set firewall family inet filter \S+ term \S+ from ip-options any'
+  fix: |
+    set firewall family inet filter PROTECT-RE term no-ip-options from ip-options any
+    set firewall family inet filter PROTECT-RE term no-ip-options then discard
+
+# --- ICMP / interface hardening ---
+- id: junos-stig-v254032-no-gratuitous-arp
+  description: "V-254032: Junos must disable Gratuitous ARP on external interfaces."
+  severity: medium
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set interfaces \S+ unit \d+ family inet no-gratuitous-arp-request'
+  notes: >-
+    UNVERIFIED — live-tested against a vJunos-switch (26.2R1.7) and
+    `no-gratuitous-arp-request` under `family inet` came back as a syntax
+    error, so this pattern is confirmed WRONG on current Junos. The device
+    became unresponsive (severe resource contention on its nested-VM host)
+    before the correct replacement syntax could be found. Treat this rule's
+    results as unreliable until re-verified.
+  fix: |
+    set interfaces ge-0/0/0 unit 0 family inet no-gratuitous-arp-request
+
+- id: junos-stig-v254033-no-directed-broadcast
+  description: "V-254033: Junos must not forward IP directed broadcasts."
+  severity: medium
+  platforms: [juniper_junos]
+  forbid:
+    - '(?im)^set interfaces \S+ unit \d+ family inet targeted-broadcast'
+  fix: |
+    delete interfaces ge-0/0/0 unit 0 family inet targeted-broadcast
+
+- id: junos-stig-v254034-036-icmp-hardening
+  description: >-
+    V-254034/V-254035/V-254036: Junos must disable ICMP redirects, mask
+    replies, and unreachable notifications on external interfaces.
+  severity: medium
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set interfaces \S+ unit \d+ family inet no-redirects'
+  notes: >-
+    Only the ICMP-redirect knob (`no-redirects`) is directly checkable
+    this way; mask-reply and unreachable suppression on Junos are
+    typically implemented via firewall-filter terms rather than a single
+    interface knob, so this rule under-covers V-254035/V-254036 — treat a
+    pass here as partial evidence, not full compliance with both.
+  fix: |
+    set interfaces ge-0/0/0 unit 0 family inet no-redirects
+
+- id: junos-stig-v254048-no-proxy-arp
+  description: "V-254048: Junos must not have Proxy ARP enabled on external interfaces (disabled by default; flags explicit enablement)."
+  severity: medium
+  platforms: [juniper_junos]
+  forbid:
+    - '(?im)^set interfaces \S+ unit \d+ (family inet )?proxy-arp'
+  fix: |
+    delete interfaces ge-0/0/0 unit 0 proxy-arp
+
+- id: junos-stig-v254000-no-phone-home
+  description: "V-254000: Junos must not be configured to call home to the vendor."
+  severity: medium
+  platforms: [juniper_junos]
+  forbid:
+    - '(?im)^set system phone-home'
+  fix: |
+    delete system phone-home
+
+- id: junos-stig-v253998-log-dropped-packets
+  description: "V-253998: Junos firewall filters must log dropped packets."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set firewall family inet filter'
+  require:
+    - '(?im)^set firewall family inet filter \S+ term \S+ then (log|syslog)'
+  fix: |
+    set firewall family inet filter PROTECT-RE term deny-rest then log
+
+# --- MPLS / IGP-LDP sync ---
+- id: junos-stig-v254063-no-mpls-ttl-propagation
+  description: "V-254063: Junos must disable TTL propagation on the MPLS router to avoid exposing internal topology via traceroute."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols mpls'
+  require:
+    - '(?im)^set protocols mpls no-propagate-ttl'
+  fix: |
+    set protocols mpls no-propagate-ttl
+
+- id: junos-stig-v254062-igp-ldp-sync
+  description: "V-254062: Junos must synchronize the IGP with LDP to minimize packet loss while LDP converges."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols ldp'
+  require:
+    - '(?im)^set protocols ospf area \S+ interface \S+ ldp-synchronization'
+  fix: |
+    set protocols ospf area 0.0.0.0 interface ge-0/0/1.0 ldp-synchronization
+
+# --- IPv6 ---
+- id: junos-stig-v254071-ipv6-ra-hop-limit
+  description: "V-254071: Junos Router Advertisements must advertise a hop limit of at least 32."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set interfaces \S+ (unit \d+ )?family inet6 address'
+  require:
+    - '(?im)^set protocols router-advertisement interface \S+ current-hop-limit (3[2-9]|[4-9]\d|\d{3,})$'
+  fix: |
+    set protocols router-advertisement interface ge-0/0/1.0 current-hop-limit 64
+
+- id: junos-stig-v254072-no-ipv6-site-local
+  description: "V-254072: Junos must not be configured with deprecated IPv6 Site-Local Unicast addresses (fec0::/10)."
+  severity: low
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set interfaces \S+ (unit \d+ )?family inet6 address'
+  forbid:
+    - '(?im)^set interfaces \S+ .*family inet6 address fec0:'
+  fix: |
+    delete interfaces ge-0/0/1 unit 0 family inet6 address fec0::1/64
+
+- id: junos-stig-v254073-suppress-ra-external
+  description: "V-254073: Junos must suppress Router Advertisements on external-facing IPv6-enabled interfaces."
+  severity: low
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set interfaces \S+ (unit \d+ )?family inet6 address'
+  require:
+    - '(?im)^set protocols router-advertisement interface \S+ no-advertise'
+  notes: Best-effort presence check — cannot verify every external-facing interface has RA suppression set, only that it's used somewhere in the config.
+  fix: |
+    set protocols router-advertisement interface ge-0/0/0.0 no-advertise
+
+- id: junos-stig-v254053-059-ipv6-extension-header-filter
+  description: >-
+    V-254053/V-254054/V-254055/V-254056/V-254057/V-254058/V-254059:
+    Junos must filter malformed or dangerous IPv6 extension headers
+    (fragmented packets missing a complete header chain, Routing Header
+    types 0/1/3255, invalid Hop-by-Hop/Destination options, Endpoint
+    Identification and NSAP address options, and undefined extension
+    headers) via an IPv6 firewall filter.
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set interfaces \S+ (unit \d+ )?family inet6 address'
+  require:
+    - '(?im)^set firewall family inet6 filter \S+ term \S+ from next-header'
+  notes: >-
+    Confirms an IPv6 filter matches on next-header/extension-header
+    conditions at all — it cannot verify every specific header
+    type/option listed across these seven findings is individually
+    covered.
+  fix: |
+    set firewall family inet6 filter IPV6-IN term block-routing-hdr from next-header routing
+    set firewall family inet6 filter IPV6-IN term block-routing-hdr then discard
+    set interfaces ge-0/0/0 unit 0 family inet6 filter input IPV6-IN

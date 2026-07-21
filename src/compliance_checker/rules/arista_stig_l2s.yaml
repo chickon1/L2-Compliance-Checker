@@ -1,0 +1,244 @@
+# Arista EOS rules derived from the DISA "Arista MLS EOS 4.X L2S" (Layer 2
+# Switch) STIG, STIG Viewer 2025-05-19 release. V-IDs are cited in each
+# description so findings can be traced back to the source requirement.
+#
+# Most L2S findings are inherently per-interface/per-VLAN ("every access
+# port must...", "every user VLAN must..."). The rule engine only sees the
+# full running-config as flat text, so these checks can only confirm the
+# feature is used *somewhere* in the config, not that it's applied
+# everywhere it should be — treat a pass as "in use," not "fully compliant,"
+# and a fail as a real gap either way. Noted per-rule below.
+#
+# Two L2S findings are intentionally omitted: V-255980 (unused ports must be
+# shut down) needs operational port state, not just config text, to know
+# which ports are actually "unused"; V-255986 (no access port on the native
+# VLAN) needs cross-referencing the native VLAN of each trunk against every
+# access port's VLAN, which flat regex can't do. Neither is representable
+# with require/forbid over static config text without producing a check
+# that's actively misleading rather than just approximate.
+
+- id: stig-v-255971-bpduguard
+  description: >-
+    STIG V-255971: BPDU Guard must be enabled on user-facing/untrusted access
+    ports (spanning-tree bpduguard enable). Confirms it's used on at least
+    one interface; does not verify every access port has it.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*spanning-tree bpduguard enable"
+  fix: |
+    interface Ethernet10
+       spanning-tree bpduguard enable
+
+- id: stig-v-255970-root-guard
+  description: >-
+    STIG V-255970: Root Guard must be enabled on ports facing downstream
+    access-layer switches (spanning-tree guard root). Confirms it's used on
+    at least one interface; does not verify every access-facing port has it.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*spanning-tree guard root"
+  fix: |
+    interface Ethernet10
+       spanning-tree guard root
+
+- id: stig-v-255969-storm-control
+  description: >-
+    STIG V-255969: storm-control must be configured on applicable interfaces
+    to limit broadcast/multicast/unknown-unicast flooding. Confirms at least
+    one storm-control rate is set somewhere; does not verify every interface.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*storm-control (broadcast|multicast|unknown-unicast) level"
+  fix: |
+    interface Ethernet10
+       storm-control broadcast level pps 5000
+       storm-control multicast level pps 5000
+       storm-control unknown-unicast level pps 5000
+
+- id: stig-v-255973-dhcp-snooping
+  description: >-
+    STIG V-255973: DHCP snooping must be enabled globally and on user VLANs
+    to validate DHCP messages from untrusted sources.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^ip dhcp snooping$"
+    - "(?im)^ip dhcp snooping vlan \\S+"
+  fix: |
+    ip dhcp snooping
+    ip dhcp snooping vlan 100
+    ip dhcp snooping information option
+
+- id: stig-v-255975-dynamic-arp-inspection
+  description: >-
+    STIG V-255975: Dynamic ARP Inspection must be enabled on user VLANs to
+    prevent ARP spoofing (ip arp inspection vlan).
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^ip arp inspection vlan \\S+"
+  fix: |
+    ip arp inspection vlan 100
+
+- id: stig-v-255974-ip-source-guard
+  description: >-
+    STIG V-255974: IP Source Guard must be enabled on untrusted access ports
+    to prevent source-address spoofing (ip verify source). Confirms it's
+    used on at least one interface; does not verify every untrusted port.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*ip verify source\\b"
+  fix: |
+    interface Ethernet10
+       ip verify source
+
+- id: stig-v-255985-native-vlan-not-default
+  description: >-
+    STIG V-255985: trunk ports must use a non-default native VLAN, not VLAN 1
+    (switchport trunk native vlan). Only flags an explicit assignment to
+    VLAN 1; a trunk left at the implicit default (no native vlan line at all)
+    isn't detectable this way.
+  severity: medium
+  platforms: [arista_eos]
+  forbid:
+    - "(?im)^\\s*switchport trunk native vlan 1\\b"
+  fix: |
+    interface Ethernet11
+       switchport trunk native vlan 999
+       switchport trunk allowed vlan 2-998,1000-4094
+
+- id: stig-v-255968-dot1x-access-ports
+  description: >-
+    STIG V-255968: 802.1x authentication (with MAC Authentication Bypass for
+    non-supplicant devices) must be enabled for access switch ports
+    connecting to LAN outlets. Confirms 802.1x is enabled globally and used
+    on at least one interface; does not verify every access port has it.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^dot1x system-auth-control"
+    - "(?im)^\\s*dot1x pae authenticator"
+  fix: |
+    aaa authentication dot1x default group radius
+    dot1x system-auth-control
+    !
+    interface Ethernet10
+       dot1x pae authenticator
+       dot1x port-control auto
+
+- id: stig-v-255972-stp-loop-guard
+  description: >-
+    STIG V-255972: STP Loop Guard must be enabled (globally or per
+    nondesignated port) to prevent topology loops from unidirectional link
+    failures.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*spanning-tree guard loop"
+  fix: |
+    spanning-tree guard loop default
+
+- id: stig-v-255977-rapid-or-mst-spanning-tree
+  description: >-
+    STIG V-255977: Rapid STP or MST must be used (not classic 802.1D STP)
+    where VLANs span multiple switches with redundant links.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^spanning-tree mode (mstp|rstp)"
+  fix: |
+    spanning-tree mode mstp
+
+- id: stig-v-255976-igmp-mld-snooping
+  description: >-
+    STIG V-255976: IGMP or MLD snooping must be configured on VLANs carrying
+    multicast traffic to constrain distribution to interested receivers.
+    Confirms IGMP-with-PIM or MLD snooping is used somewhere; does not
+    verify every VLAN.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*(ip igmp|pim ipv4 sparse-mode|mld snooping)"
+  fix: |
+    interface Vlan100
+       ip igmp
+       pim ipv4 sparse-mode
+
+- id: stig-v-255979-static-trunk-links
+  description: >-
+    STIG V-255979: trunk links must be statically configured (switchport
+    mode trunk) with explicit allowed-VLAN lists rather than left to
+    negotiate, to avoid Dynamic Trunk Protocol delays. EOS doesn't run DTP
+    at all, so this mainly confirms trunk ports exist and are explicit.
+  severity: low
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*switchport mode trunk"
+  fix: |
+    interface Ethernet11
+       switchport trunk allowed vlan 100-200
+       switchport mode trunk
+
+- id: stig-v-255981-no-default-vlan-on-access-ports
+  description: >-
+    STIG V-255981: no access switch port may be assigned to the default
+    VLAN (VLAN 1). Only flags an explicit `switchport access vlan 1`; a
+    port left at the implicit access-VLAN default isn't detectable this way.
+  severity: medium
+  platforms: [arista_eos]
+  forbid:
+    - "(?im)^\\s*switchport access vlan 1\\b"
+  fix: |
+    interface Ethernet10
+       switchport access vlan 100
+
+- id: stig-v-255982-default-vlan-suspended
+  description: >-
+    STIG V-255982: the default VLAN (1) should be suspended and pruned from
+    trunk links that don't need it (vlan 1 / state suspend). Weak check:
+    confirms both a `vlan 1` block and a `state suspend` line exist
+    somewhere, but can't confirm the suspend applies to VLAN 1 specifically
+    rather than some other VLAN block.
+  severity: low
+  platforms: [arista_eos]
+  require:
+    - "(?im)^vlan 1$"
+    - "(?im)^\\s*state suspend"
+  fix: |
+    vlan 1
+       state suspend
+
+- id: stig-v-255983-management-vrf-isolation
+  description: >-
+    STIG V-255983: management access must use a dedicated VRF, not the
+    default VLAN, to isolate management traffic. Weak check: confirms some
+    named VRF instance exists; can't confirm it's actually bound to the
+    management interface.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^vrf instance \\S+"
+  fix: |
+    vrf instance MGMT
+    !
+    interface Management1
+       vrf MGMT
+       ip address 192.0.2.2/24
+
+- id: stig-v-255984-untrusted-ports-access-mode
+  description: >-
+    STIG V-255984: all user-facing/untrusted switch ports must be configured
+    as access ports (switchport mode access), not trunk, to prevent VLAN
+    double-encapsulation attacks. Confirms access mode is used somewhere;
+    does not verify every untrusted port.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*switchport mode access"
+  fix: |
+    interface Ethernet10
+       switchport mode access

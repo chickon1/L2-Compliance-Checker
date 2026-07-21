@@ -1,0 +1,250 @@
+# Cisco IOS-XE rules derived from the DISA "Cisco IOS XE Switch L2S" (Layer 2
+# Switch) STIG. V-IDs are cited in each description.
+#
+# Most L2S findings are inherently per-interface/per-VLAN ("every access
+# port must...", "every user VLAN must..."). The rule engine only sees the
+# full running-config as flat text, so these checks can only confirm the
+# feature is used *somewhere* in the config, not that it's applied
+# everywhere it should be — treat a pass as "in use," not "fully compliant."
+#
+# Findings intentionally omitted (flat regex can't represent them without
+# being actively misleading):
+#   V-220651 (manage excess bandwidth against flooding DoS) — overlaps
+#     entirely with storm-control (V-220662) plus a control-plane policy
+#     that has no single canonical command to check for.
+#   V-220667 (disabled ports parked in an unused VLAN) — "disabled" and
+#     "unused" are both operational-state facts, not config text.
+#   V-220669 (default VLAN pruned from trunks that don't need it) — "don't
+#     need it" requires knowing per-trunk which VLANs are actually in use.
+#   V-220670 (default VLAN not used for management) — which VLAN is "the
+#     management VLAN" isn't identifiable from flat config text alone.
+#   V-220673 (no switchport assigned to the native VLAN) — duplicates the
+#     native-VLAN-reassignment check (stig-v-220672) with no way to add
+#     value from flat text; the same trunk-native-vlan check already covers
+#     the underlying risk.
+
+- id: stig-v-220649-dot1x-access-ports
+  description: >-
+    STIG V-220649: network-connected endpoint devices must be uniquely
+    identified and authenticated (802.1x with MAC Authentication Bypass)
+    before a connection is established.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^dot1x system-auth-control"
+    - "(?im)^\\s*authentication port-control auto"
+  fix: |
+    aaa authentication dot1x default group radius
+    dot1x system-auth-control
+    !
+    interface GigabitEthernet1/0/1
+     authentication port-control auto
+     dot1x pae authenticator
+     mab
+
+- id: stig-v-220650-vtp-authentication
+  description: >-
+    STIG V-220650: VTP messages must be authenticated with a password
+    (VTP hashes the password into the update digest).
+  severity: medium
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^vtp (mode|domain)"
+  require:
+    - "(?im)^vtp password\\b"
+  fix: |
+    vtp password <strong-passphrase>
+
+- id: stig-v-220656-bpduguard
+  description: >-
+    STIG V-220656: BPDU Guard must be enabled on user-facing/untrusted
+    access switch ports. Confirms it's used on at least one interface; does
+    not verify every access port has it.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*spanning-tree bpduguard enable"
+  fix: |
+    interface GigabitEthernet1/0/1
+     spanning-tree bpduguard enable
+
+- id: stig-v-220655-root-guard
+  description: >-
+    STIG V-220655: Root Guard must be enabled on ports connecting to
+    downstream access-layer switches. Confirms it's used on at least one
+    interface; does not verify every access-facing port has it.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*spanning-tree guard root"
+  fix: |
+    interface GigabitEthernet1/0/1
+     spanning-tree guard root
+
+- id: stig-v-220657-stp-loop-guard
+  description: >-
+    STIG V-220657: STP Loop Guard must be enabled to prevent topology loops
+    from unidirectional link failures.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^spanning-tree loopguard default"
+  fix: |
+    spanning-tree loopguard default
+
+- id: stig-v-220658-unknown-unicast-flood-blocking
+  description: >-
+    STIG V-220658: Unknown Unicast Flood Blocking (UUFB) must be enabled to
+    limit flooding of frames to unknown destination MACs.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*switchport block unicast"
+  fix: |
+    interface GigabitEthernet1/0/1
+     switchport block unicast
+
+- id: stig-v-220659-dhcp-snooping
+  description: >-
+    STIG V-220659: DHCP snooping must be enabled for all user VLANs to
+    validate DHCP messages from untrusted sources.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^ip dhcp snooping$"
+    - "(?im)^ip dhcp snooping vlan \\S+"
+  fix: |
+    ip dhcp snooping
+    ip dhcp snooping vlan 100
+    ip dhcp snooping information option
+
+- id: stig-v-220660-ip-source-guard
+  description: >-
+    STIG V-220660: IP Source Guard must be enabled on all user-facing or
+    untrusted access switch ports. Confirms it's used on at least one
+    interface; does not verify every untrusted port.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*ip verify source\\b"
+  fix: |
+    interface GigabitEthernet1/0/1
+     ip verify source
+
+- id: stig-v-220661-dynamic-arp-inspection
+  description: >-
+    STIG V-220661: Dynamic ARP Inspection must be enabled on all user VLANs
+    to prevent ARP spoofing.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^ip arp inspection vlan \\S+"
+  fix: |
+    ip arp inspection vlan 100
+
+- id: stig-v-220662-storm-control
+  description: >-
+    STIG V-220662: Storm Control must be configured on host-facing
+    switchports to limit broadcast/multicast/unknown-unicast flooding.
+    Confirms at least one storm-control rate is set somewhere; does not
+    verify every interface.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*storm-control (broadcast|multicast|unicast) level"
+  fix: |
+    interface GigabitEthernet1/0/1
+     storm-control broadcast level 1.00
+     storm-control multicast level 1.00
+     storm-control action trap
+
+- id: stig-v-220663-igmp-mld-snooping
+  description: >-
+    STIG V-220663: IGMP or MLD snooping must be configured on all VLANs to
+    constrain multicast distribution to interested receivers. IGMP snooping
+    is on by default globally on IOS-XE; this confirms it hasn't been
+    explicitly disabled.
+  severity: medium
+  platforms: [cisco_ios]
+  forbid:
+    - "(?im)^no ip igmp snooping$"
+  fix: |
+    ip igmp snooping
+
+- id: stig-v-220664-rapid-spanning-tree
+  description: >-
+    STIG V-220664: Rapid STP (or MST) must be used, not classic 802.1D STP,
+    where VLANs span multiple switches with redundant links.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^spanning-tree mode (rapid-pvst|mst)"
+  fix: |
+    spanning-tree mode rapid-pvst
+
+- id: stig-v-220665-udld-enabled
+  description: >-
+    STIG V-220665: Unidirectional Link Detection (UDLD) must be enabled to
+    protect against one-way link conditions.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^udld (enable|aggressive)"
+  fix: |
+    udld aggressive
+
+- id: stig-v-220666-static-trunk-links
+  description: >-
+    STIG V-220666: trunk links must be statically configured with an
+    explicit allowed-VLAN list, not left to negotiate via DTP.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*switchport mode trunk"
+    - "(?im)^\\s*switchport nonegotiate"
+  fix: |
+    interface GigabitEthernet1/0/24
+     switchport trunk allowed vlan 100-200
+     switchport mode trunk
+     switchport nonegotiate
+
+- id: stig-v-220668-no-default-vlan-on-access-ports
+  description: >-
+    STIG V-220668: the default VLAN (1) must not be assigned to any
+    host-facing/user access switch port. Only flags an explicit
+    `switchport access vlan 1`; a port left at the implicit access-VLAN
+    default isn't detectable this way.
+  severity: medium
+  platforms: [cisco_ios]
+  forbid:
+    - "(?im)^\\s*switchport access vlan 1\\b"
+  fix: |
+    interface GigabitEthernet1/0/1
+     switchport access vlan 100
+
+- id: stig-v-220671-untrusted-ports-access-mode
+  description: >-
+    STIG V-220671: all user-facing/untrusted switch ports must be
+    configured as access ports, not trunk, to prevent VLAN
+    double-encapsulation attacks. Confirms access mode is used somewhere;
+    does not verify every untrusted port.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*switchport mode access"
+  fix: |
+    interface GigabitEthernet1/0/1
+     switchport mode access
+
+- id: stig-v-220672-native-vlan-not-default
+  description: >-
+    STIG V-220672: 802.1q trunk links must use a native VLAN ID other than
+    the default VLAN (1). Only flags an explicit assignment to VLAN 1; a
+    trunk left at the implicit default isn't detectable this way.
+  severity: medium
+  platforms: [cisco_ios]
+  forbid:
+    - "(?im)^\\s*switchport trunk native vlan 1\\b"
+  fix: |
+    interface GigabitEthernet1/0/24
+     switchport trunk native vlan 999

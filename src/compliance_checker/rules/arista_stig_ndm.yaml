@@ -1,0 +1,134 @@
+# Arista EOS rules derived from the DISA "Arista MLS EOS 4.X NDM" (Network
+# Device Management) STIG, STIG Viewer 2025-05-19 release. V-IDs are cited in
+# each description so findings can be traced back to the source requirement.
+#
+# The rule engine only does flat require/forbid regex matching against the
+# full running-config text — it has no per-interface or per-section context.
+# That's a real limitation for a couple of these (noted per-rule below).
+# Treat those as a signal to investigate rather than a definitive pass.
+
+- id: stig-v-255949-account-lockout
+  description: >-
+    STIG V-255949: lock out an account for 900 seconds after 3 failed login
+    attempts (aaa authentication policy lockout)
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^aaa authentication policy lockout failure 3"
+    - "(?im)^\\s*duration 900"
+  fix: |
+    aaa authentication policy lockout failure 3
+       duration 900
+
+- id: stig-v-255948-management-acl
+  description: >-
+    STIG V-255948: management SSH access must be restricted by an inbound
+    ACL permitting only authorized management hosts (ip access-group ... in,
+    applied under management ssh). Confirms an ACL is applied inbound
+    somewhere in the config; does not verify it's specifically bound to
+    management ssh or that its permit/deny entries match your real
+    management subnet.
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*ip access-group \\S+ in\\b"
+  fix: |
+    ip access-list MGMT_NETWORK
+       10 permit ip 192.0.2.0/24 any
+       20 deny ip any any log
+    !
+    management ssh
+       ip access-group MGMT_NETWORK in
+
+- id: stig-v-255950-login-banner
+  description: >-
+    STIG V-255950: a DOD-approved login banner must be presented before
+    authentication (banner login)
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^banner login"
+  fix: |
+    banner login
+    Authorized access only.
+    EOF
+
+- id: stig-v-255955-fips-restrictions
+  description: >-
+    STIG V-255955: SSH must enforce FIPS 140-2 approved cryptographic
+    algorithms (management ssh / fips restrictions). Verified live on a
+    real EOS 4.33 device — confirmed `fips restrictions` under
+    `management ssh` flips `show management ssh`'s FIPS status from
+    disabled to enabled. The STIG's companion hardware/haveged entropy-
+    source step (`management security / entropy source hardware`) is
+    platform-dependent (rejected as unsupported on the virtual vEOS-lab
+    platform tested) and isn't checked here since it can't be verified as
+    generally applicable.
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*fips restrictions"
+  fix: |
+    management ssh
+       fips restrictions
+
+- id: stig-v-255956-idle-timeout
+  description: >-
+    STIG V-255956: management console and SSH sessions must terminate after
+    10 minutes of inactivity (idle-timeout 10 under management console /
+    management ssh). Checks that a 10-minute idle-timeout appears somewhere
+    in the config; does not confirm it's set under both sections.
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*idle-timeout 10\\b"
+  fix: |
+    management console
+       idle-timeout 10
+    !
+    management ssh
+       idle-timeout 10
+
+- id: stig-v-255961-ssh-fips-cipher
+  description: >-
+    STIG V-255961: SSH must use only FIPS 140-2 approved ciphers
+    (aes256-ctr/aes128-ctr), not AES-CBC, for remote maintenance sessions
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*cipher .*aes256-ctr"
+  forbid:
+    - "(?im)^\\s*cipher .*aes\\d+-cbc"
+  fix: |
+    management ssh
+       cipher aes256-ctr aes128-ctr
+
+- id: stig-v-255966-central-syslog
+  description: >-
+    STIG V-255966: logs must be forwarded to a central syslog server
+    (logging host)
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^logging host \\S+"
+  fix: |
+    logging host 192.0.2.10
+
+- id: stig-v-255958-ntp-authenticated
+  description: >-
+    STIG V-255958: NTP time sources must be cryptographically authenticated
+    (ntp authenticate, trusted-key, and keyed server entries). Confirms
+    authenticated NTP is enabled; does not verify the two-source redundancy
+    the STIG also requires.
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^ntp authenticate"
+    - "(?im)^ntp trusted-key \\d+"
+    - "(?im)^ntp server \\S+.*\\bkey \\d+"
+  fix: |
+    ntp authentication-key 1 sha1 0 <key>
+    ntp trusted-key 1
+    ntp authenticate
+    ntp server 192.0.2.20 prefer key 1
+    ntp server 192.0.2.21 key 1

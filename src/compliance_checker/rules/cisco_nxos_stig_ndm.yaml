@@ -1,0 +1,318 @@
+# Cisco NX-OS rules derived from the DISA "Cisco NX-OS Switch NDM" (Network
+# Device Management) STIG. V-IDs are cited in each description.
+#
+# NX-OS's feature model (many commands only appear once `feature X` is
+# enabled) and its bundled password-complexity toggle (one switch rather
+# than IOS's per-character-class knobs) mean a handful of these rules are
+# structured differently from their IOS-XE counterparts even though they
+# implement the same STIG requirement. A few command forms below (marked
+# with `notes`) haven't been live-verified against a real NX-OS device yet
+# and should be confirmed on the lab N9K before being trusted as gospel —
+# NX-OS syntax has drifted across major train versions more than IOS-XE's.
+#
+# Excluded for the same reasons as the IOS-XE NDM STIG: V-220517 (currently
+# supported release — needs `show version`, not config text), V-220496
+# (audit storage "appropriate" sizing — a judgment call, not a fixed
+# value), V-220514 (config backup on change — an operational/process
+# control), V-220515 (certs from an approved CA — not in running-config).
+# V-220475/220476/220477/220478/220494/220506/220507 (account create/
+# modify/disable/remove/enable, privilege change logging) are consolidated
+# into one command-accounting check, same rationale as the IOS-XE NDM STIG.
+
+- id: stig-v-220486-unnecessary-services
+  description: >-
+    STIG V-220486: unnecessary and nonsecure services must be disabled —
+    Telnet and the HTTP(S) device manager server.
+  severity: high
+  platforms: [cisco_nxos]
+  forbid:
+    - "(?im)^feature telnet$"
+    - "(?im)^feature http-server$"
+  fix: |
+    no feature telnet
+    no feature http-server
+
+- id: stig-v-220493-idle-timeout
+  description: >-
+    STIG V-220493: management sessions must terminate after 5 minutes of
+    inactivity. Confirms a 5-minute exec-timeout appears somewhere in the
+    config; does not confirm it's set on every line.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*exec-timeout 5\\b"
+  fix: |
+    line console
+     exec-timeout 5
+    line vty
+     exec-timeout 5
+
+- id: stig-v-220503-ssh-fips-mac
+  description: >-
+    STIG V-220503: SSH must use a FIPS-validated HMAC (SHA-2) for remote
+    maintenance session integrity, not SHA-1 or MD5.
+  severity: high
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — confirm this
+    command exists on the target NX-OS train before relying on it.
+  require:
+    - "(?im)^ssh server algorithm mac\\b.*hmac-sha2"
+  fix: |
+    ssh server algorithm mac hmac-sha2-256
+
+- id: stig-v-220504-ssh-fips-encryption
+  description: >-
+    STIG V-220504: SSH must use FIPS 140-2 approved AES ciphers for remote
+    maintenance session confidentiality.
+  severity: high
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — confirm this
+    command exists on the target NX-OS train before relying on it.
+  require:
+    - "(?im)^ssh server algorithm encryption\\b.*aes"
+  fix: |
+    ssh server algorithm encryption aes256-ctr aes192-ctr aes128-ctr
+
+- id: stig-v-220513-two-auth-servers
+  description: >-
+    STIG V-220513: at least two authentication servers must be configured
+    for administrator authentication redundancy. Weak check — confirms an
+    AAA server group with at least one member exists; cannot count distinct
+    servers from flat regex.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^feature tacacs\\+$"
+    - "(?im)^tacacs-server host \\S+"
+  fix: |
+    feature tacacs+
+    tacacs-server host 192.0.2.10 key <key>
+    tacacs-server host 192.0.2.11 key <key>
+    aaa group server tacacs+ ISE
+     server 192.0.2.10
+     server 192.0.2.11
+
+- id: stig-v-220516-central-syslog
+  description: >-
+    STIG V-220516: logs must be forwarded to at least two central log
+    servers. Weak check — confirms at least one `logging server` line;
+    cannot count distinct servers from flat regex.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^logging server \\S+"
+  fix: |
+    logging server 192.0.2.20
+    logging server 192.0.2.21
+
+- id: stig-v-220474-session-limit
+  description: >-
+    STIG V-220474: concurrent management sessions must be limited to an
+    organization-defined number.
+  severity: medium
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — confirm this
+    command exists on the target NX-OS train before relying on it.
+  require:
+    - "(?im)^\\s*session-limit \\d+"
+  fix: |
+    line vty
+     session-limit 4
+
+- id: stig-v-220475-command-accounting
+  description: >-
+    STIG V-220475/220476/220477/220478/220494/220506/220507: account
+    creation, modification, disabling, removal, enabling, and privilege
+    changes must all be audited. Consolidated into one check for command
+    accounting, which captures every admin action taken at the CLI
+    (including account management).
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^aaa accounting default group"
+  fix: |
+    aaa accounting default group tacacs+
+
+- id: stig-v-220479-management-acl
+  description: >-
+    STIG V-220479: management information flow must be restricted by an
+    inbound ACL limiting which hosts may reach management interfaces/VTYs.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*ip access-group \\S+ in\\b"
+  fix: |
+    ip access-list MGMT_HOSTS
+     10 permit ip 192.0.2.0/24 any
+     20 deny ip any any log
+    !
+    interface mgmt0
+     ip access-group MGMT_HOSTS in
+
+- id: stig-v-220480-account-lockout
+  description: >-
+    STIG V-220480: accounts must be locked out after 3 consecutive failed
+    logon attempts.
+  severity: medium
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — the exact
+    `aaa authentication rejected` syntax has varied across NX-OS trains,
+    confirm on the target device before relying on it.
+  require:
+    - "(?im)^aaa authentication rejected 3\\b"
+  fix: |
+    aaa authentication rejected 3 in 900 secs for 900 secs
+
+- id: stig-v-220481-login-banner
+  description: >-
+    STIG V-220481: a DoD-approved login banner must be presented before
+    authentication.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^banner motd"
+  fix: |
+    banner motd ^
+    Authorized access only.
+    ^
+
+- id: stig-v-220485-privileged-command-logging
+  description: >-
+    STIG V-220485: full-text logging of privileged commands must be enabled
+    so every administrator action is recorded.
+  severity: medium
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — confirm this
+    command exists on the target NX-OS train before relying on it.
+  require:
+    - "(?im)^logging level aaa 6"
+  fix: |
+    logging level aaa 6
+
+- id: stig-v-220489-password-complexity
+  description: >-
+    STIG V-220489/220490/220491/220492: passwords must require uppercase,
+    lowercase, numeric, and special characters. Consolidated into one
+    check — NX-OS enforces character-class complexity as a single bundled
+    toggle (`password strength-check`) rather than IOS's per-class knobs.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^password strength-check"
+  fix: |
+    password strength-check
+
+- id: stig-v-220497-logging-trap-alerts
+  description: >-
+    STIG V-220497: the device must generate alerts for audit-failure events
+    by sending logs at an adequate severity level to the central log server.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^logging server \\S+ [0-6]\\b"
+  fix: |
+    logging server 192.0.2.20 6
+
+- id: stig-v-220498-ntp-redundant-sources
+  description: >-
+    STIG V-220498: the clock must be synchronized with redundant
+    authoritative time sources. Weak check — confirms at least one NTP
+    server; cannot count distinct servers from flat regex.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^ntp server \\S+"
+  fix: |
+    ntp server 192.0.2.30
+    ntp server 192.0.2.31
+
+- id: stig-v-220499-log-timestamps
+  description: >-
+    STIG V-220499: timestamps in audit records must be mappable to UTC/GMT.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^logging timestamp"
+  fix: |
+    logging timestamp milliseconds
+    clock timezone UTC 0 0
+
+- id: stig-v-220500-snmp-fips-auth
+  description: >-
+    STIG V-220500: SNMP messages must be authenticated using a
+    FIPS-validated HMAC (SNMPv3 auth SHA).
+  severity: medium
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^snmp-server"
+  require:
+    - "(?im)^snmp-server user \\S+.*\\bauth sha\\b"
+  fix: |
+    snmp-server user snmpadmin network-admin auth sha <authpass> priv aes-128 <privpass>
+
+- id: stig-v-220501-snmp-fips-privacy
+  description: >-
+    STIG V-220501: SNMP messages must be encrypted with a FIPS 140-2
+    approved algorithm (SNMPv3 priv AES).
+  severity: medium
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^snmp-server"
+  require:
+    - "(?im)^snmp-server user \\S+.*\\bpriv aes\\b"
+  fix: |
+    snmp-server user snmpadmin network-admin auth sha <authpass> priv aes-128 <privpass>
+
+- id: stig-v-220502-ntp-authenticated
+  description: >-
+    STIG V-220502: NTP time sources must be cryptographically authenticated.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^ntp authenticate$"
+    - "(?im)^ntp trusted-key \\d+"
+    - "(?im)^ntp server \\S+.*\\bkey \\d+"
+  fix: |
+    ntp authentication-key 1 md5 <key>
+    ntp trusted-key 1
+    ntp authenticate
+    ntp server 192.0.2.30 key 1
+
+- id: stig-v-220508-logon-attempt-logging
+  description: >-
+    STIG V-220508: successful and unsuccessful logon attempts must be
+    audited.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^aaa accounting default group"
+  fix: |
+    aaa accounting default group tacacs+
+
+- id: stig-v-220509-privileged-activity-logging
+  description: >-
+    STIG V-220509: privileged activity must be logged.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^aaa accounting default group"
+  fix: |
+    aaa accounting default group tacacs+
+
+- id: stig-v-260464-control-plane-protection
+  description: >-
+    STIG V-260464: the device must be protected against denial-of-service
+    attacks via control plane policing.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*control-plane"
+    - "(?im)^\\s*service-policy input \\S+"
+  fix: |
+    control-plane
+     service-policy input copp-system-policy

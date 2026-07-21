@@ -1,0 +1,60 @@
+# Starter compliance rule pack for Cisco IOS/IOS-XE and NX-OS. Edit or add
+# rule packs freely — each rule is a set of regexes checked against the full
+# running-config text, scoped to the platforms it applies to.
+#
+# Reconciled against the full Cisco IOS-XE/NX-OS STIG rule packs
+# (cisco_iosxe_stig_*.yaml, cisco_nxos_stig_*.yaml): vty-exec-timeout-set,
+# ntp-configured, and no-http-server were retired here since the STIG packs
+# now check the same ground more rigorously (specific timeout values,
+# platform-correct disable commands). password-encryption-enabled and
+# banner-motd-present were rescoped to cisco_ios only — `service
+# password-encryption` isn't a real NX-OS command (NX-OS always stores
+# hashed passwords) and NX-OS's login banner is already covered by
+# stig-v-220481 in cisco_nxos_stig_ndm.yaml.
+- id: no-telnet-server
+  description: Telnet server (or VTY telnet transport) must not be enabled
+  severity: high
+  platforms: [cisco_ios, cisco_nxos]
+  forbid:
+    - "(?im)^\\s*transport input\\s+.*\\btelnet\\b"
+  fix: |
+    line vty 0 4
+     transport input ssh
+
+- id: aaa-login-configured
+  description: AAA authentication for login must be configured
+  severity: high
+  platforms: [cisco_ios, cisco_nxos]
+  require:
+    - "(?im)^aaa authentication login"
+  fix: |
+    aaa new-model
+    aaa authentication login default group tacacs+ local
+
+- id: no-default-snmp-community
+  description: Default SNMP community strings (public/private) must not be present
+  severity: high
+  platforms: [cisco_ios, cisco_nxos]
+  forbid:
+    - "(?im)^snmp-server community\\s+(public|private)\\b"
+  fix: |
+    no snmp-server community public
+    no snmp-server community private
+
+- id: password-encryption-enabled
+  description: Service password-encryption must be enabled
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^service password-encryption"
+  fix: |
+    service password-encryption
+
+- id: banner-motd-present
+  description: A login banner (banner motd) must be configured
+  severity: low
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^banner motd"
+  fix: |
+    banner motd ^ Authorized access only. ^

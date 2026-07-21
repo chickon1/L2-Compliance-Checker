@@ -1,0 +1,231 @@
+# Cisco NX-OS rules derived from the DISA "Cisco NX-OS Switch L2S" (Layer 2
+# Switch) STIG. V-IDs are cited in each description.
+#
+# Most L2S findings are inherently per-interface/per-VLAN. The rule engine
+# only sees the full running-config as flat text, so these checks can only
+# confirm the feature is used *somewhere*, not that it's applied
+# everywhere it should be — treat a pass as "in use," not "fully compliant."
+#
+# V-220679 (authenticate endpoint devices before connection) is a duplicate
+# of V-220675 on NX-OS's L2S doc and is folded into that one rule.
+# Findings intentionally omitted, same rationale as the IOS-XE L2S STIG:
+#   V-220677/220678 (authorize which users may capture/view SPAN session
+#     traffic) — this is an operational access-control policy for who may
+#     configure monitor sessions, not a fixed line of config to check for.
+#   V-220690 (disabled ports parked in an unused VLAN) — "disabled"/
+#     "unused" are operational-state facts, not config text.
+#   V-220692 (default VLAN pruned from trunks that don't need it) — "don't
+#     need it" requires knowing per-trunk which VLANs are actually in use.
+#   V-220693 (default VLAN not used for management) — which VLAN is "the
+#     management VLAN" isn't identifiable from flat config text alone.
+#   V-220696 (no switchport assigned to the native VLAN) — duplicates the
+#     native-VLAN-reassignment check (stig-v-220695) with no way to add
+#     value from flat text.
+
+- id: stig-v-220675-dot1x-access-ports
+  description: >-
+    STIG V-220675/220679: network-connected endpoint devices must be
+    uniquely identified and authenticated (802.1x with MAC Authentication
+    Bypass) before a connection is established.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^feature dot1x$"
+    - "(?im)^\\s*dot1x port-control auto"
+  fix: |
+    feature dot1x
+    !
+    interface Ethernet1/1
+     dot1x port-control auto
+     dot1x mac-auth-bypass
+
+- id: stig-v-220676-vtp-authentication
+  description: >-
+    STIG V-220676: VTP messages must be authenticated with a password.
+  severity: high
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^feature vtp$"
+  require:
+    - "(?im)^vtp password\\b"
+  fix: |
+    feature vtp
+    vtp password <strong-passphrase>
+
+- id: stig-v-220680-root-guard
+  description: >-
+    STIG V-220680: Root Guard must be enabled on ports connecting to
+    downstream access-layer switches. Confirms it's used on at least one
+    interface; does not verify every access-facing port has it.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*spanning-tree guard root"
+  fix: |
+    interface Ethernet1/1
+     spanning-tree guard root
+
+- id: stig-v-220681-bpduguard
+  description: >-
+    STIG V-220681: BPDU Guard must be enabled on user-facing/untrusted
+    access switch ports.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^spanning-tree port type edge bpduguard default"
+  fix: |
+    spanning-tree port type edge bpduguard default
+
+- id: stig-v-220682-stp-loop-guard
+  description: >-
+    STIG V-220682: STP Loop Guard must be enabled to prevent topology loops
+    from unidirectional link failures.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^spanning-tree loopguard default"
+  fix: |
+    spanning-tree loopguard default
+
+- id: stig-v-220683-unknown-unicast-flood-blocking
+  description: >-
+    STIG V-220683: Unknown Unicast Flood Blocking (UUFB) must be enabled to
+    limit flooding of frames to unknown destination MACs.
+  severity: high
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — confirm this
+    command exists on the target NX-OS train before relying on it.
+  require:
+    - "(?im)^\\s*switchport block unicast"
+  fix: |
+    interface Ethernet1/1
+     switchport block unicast
+
+- id: stig-v-220684-dhcp-snooping
+  description: >-
+    STIG V-220684: DHCP snooping must be enabled for all user VLANs to
+    validate DHCP messages from untrusted sources.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^feature dhcp$"
+    - "(?im)^ip dhcp snooping$"
+    - "(?im)^ip dhcp snooping vlan \\S+"
+  fix: |
+    feature dhcp
+    ip dhcp snooping
+    ip dhcp snooping vlan 100
+
+- id: stig-v-220685-ip-source-guard
+  description: >-
+    STIG V-220685: IP Source Guard must be enabled on all user-facing or
+    untrusted access switch ports. Confirms it's used on at least one
+    interface; does not verify every untrusted port.
+  severity: high
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — NX-OS's IP Source
+    Guard command differs from IOS-XE's; confirm the exact keyword on the
+    target train before relying on it.
+  require:
+    - "(?im)^\\s*ip verify source"
+  fix: |
+    interface Ethernet1/1
+     ip verify source dhcp-snooping-vlan
+
+- id: stig-v-220686-dynamic-arp-inspection
+  description: >-
+    STIG V-220686: Dynamic ARP Inspection must be enabled on all user VLANs
+    to prevent ARP spoofing.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^feature dhcp$"
+    - "(?im)^ip arp inspection vlan \\S+"
+  fix: |
+    feature dhcp
+    ip arp inspection vlan 100
+
+- id: stig-v-220687-storm-control
+  description: >-
+    STIG V-220687: Storm Control must be configured on host-facing
+    switchports to limit broadcast/multicast/unknown-unicast flooding.
+    Confirms at least one storm-control rate is set somewhere; does not
+    verify every interface.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*storm-control (broadcast|multicast|unicast) level"
+  fix: |
+    interface Ethernet1/1
+     storm-control broadcast level 1.00
+     storm-control multicast level 1.00
+     storm-control unicast level 1.00
+
+- id: stig-v-220688-igmp-mld-snooping
+  description: >-
+    STIG V-220688: IGMP or MLD snooping must be configured on all VLANs.
+    IGMP snooping is on by default globally on NX-OS; this confirms it
+    hasn't been explicitly disabled.
+  severity: high
+  platforms: [cisco_nxos]
+  forbid:
+    - "(?im)^no ip igmp snooping$"
+  fix: |
+    ip igmp snooping
+
+- id: stig-v-220689-udld-enabled
+  description: >-
+    STIG V-220689: Unidirectional Link Detection (UDLD) must be enabled to
+    protect against one-way link conditions.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^feature udld$"
+    - "(?im)^\\s*udld (enable|aggressive)"
+  fix: |
+    feature udld
+    !
+    interface Ethernet1/1
+     udld aggressive
+
+- id: stig-v-220691-no-default-vlan-on-access-ports
+  description: >-
+    STIG V-220691: the default VLAN (1) must not be assigned to any
+    host-facing/user access switch port. Only flags an explicit
+    `switchport access vlan 1`; a port left at the implicit access-VLAN
+    default isn't detectable this way.
+  severity: high
+  platforms: [cisco_nxos]
+  forbid:
+    - "(?im)^\\s*switchport access vlan 1\\b"
+  fix: |
+    interface Ethernet1/1
+     switchport access vlan 100
+
+- id: stig-v-220694-untrusted-ports-access-mode
+  description: >-
+    STIG V-220694: all user-facing/untrusted switch ports must be
+    configured as access ports, not trunk. Confirms access mode is used
+    somewhere; does not verify every untrusted port.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*switchport mode access"
+  fix: |
+    interface Ethernet1/1
+     switchport mode access
+
+- id: stig-v-220695-native-vlan-not-default
+  description: >-
+    STIG V-220695: 802.1q trunk links must use a native VLAN ID other than
+    the default VLAN (1). Only flags an explicit assignment to VLAN 1; a
+    trunk left at the implicit default isn't detectable this way.
+  severity: high
+  platforms: [cisco_nxos]
+  forbid:
+    - "(?im)^\\s*switchport trunk native vlan 1\\b"
+  fix: |
+    interface Ethernet1/48
+     switchport trunk native vlan 999

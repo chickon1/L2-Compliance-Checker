@@ -1,0 +1,813 @@
+# Arista EOS rules derived from the DISA "Arista MLS EOS 4.X Router" STIG,
+# STIG Viewer 2025-02-20 release (~75 findings). V-IDs are cited in each
+# description. Findings covering the same underlying config artifact (e.g.
+# several BGP findings all just check "is a prefix-list/route-map applied
+# to this neighbor") are intentionally consolidated into one rule citing
+# multiple V-IDs — see the note on each such rule for why.
+#
+# Almost every rule here uses `applies_if` gated on the routing
+# protocol/feature it concerns, so a rule is only ever evaluated against a
+# device whose own config shows that protocol/feature enabled at all (e.g.
+# the OSPF rule is skipped entirely on a device with no `router ospf`
+# block). This is what makes including the full STIG safe rather than
+# noisy — a device that doesn't run BGP/PIM/MPLS/etc. just never sees those
+# rules in its results.
+#
+# A handful of findings are excluded outright because they depend on
+# organization-specific facts a generic tool can't know (e.g. V-256003
+# "don't BGP-peer with the alternate gateway provider's AS" requires
+# knowing which AS that is) or on ACL/prefix-list *content* we can't
+# verify from a name-independent regex (the list/route-map names in STIG
+# examples — BOGON_v4, FILTER_INBOUND, etc. — are illustrative, not
+# required strings). Also excluded: V-256004 (don't redistribute a
+# specific alternate-gateway static route — same "which route is that"
+# problem as V-256003); V-256005/256006/256023/256024/256025 (all tied to
+# a specific dual-IGP out-of-band-management network design with fixed
+# process numbers/VRF names that can't be generically verified); V-256009
+# ("disable non-essential capabilities" lists disabling NTP and MLAG
+# specifically, which directly contradicts the NDM pack's authenticated-NTP
+# requirement and would be actively wrong for any device intentionally
+# using MLAG — too context-dependent to encode safely); V-256001 (disable
+# inactive interfaces) and V-255998 (PIM only where needed) both require
+# knowing operational/topology facts not present in static config text;
+# V-256028 (LDP session auth) would need matching a bare "password" line,
+# too generic and collision-prone with unrelated password config;
+# V-256029 (disable zero-touch) is verified via `show zerotouch`, an
+# operational command, not something that appears in running-config at
+# all; V-256055 (unique VPWS VC IDs) needs comparing pseudowire IDs across
+# two devices, which one device's config can't determine; V-256013/256014
+# (QoS per the DoD's DODIN/GIG Technical Profiles) require matching exact
+# DSCP-to-class mappings and bandwidth percentages defined in external DoD
+# documents this tool has no access to — V-256012's more general
+# "some DoS-mitigating QoS policy exists" check is included instead.
+
+# --- BGP ---
+
+- id: stig-v-255992-bgp-enforce-first-as
+  description: >-
+    STIG V-255992: eBGP peers must have `bgp enforce-first-as` enabled to
+    reject updates that don't list the peer's own AS first in AS_PATH.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*bgp enforce-first-as"
+  fix: |
+    router bgp 65000
+       bgp enforce-first-as
+
+- id: stig-v-256035-bgp-maximum-prefixes
+  description: >-
+    STIG V-256035: eBGP neighbors must limit the number of accepted
+    prefixes (neighbor ... maximum-routes) to protect against route-table
+    flooding. Confirms it's set on at least one neighbor; does not verify
+    every eBGP neighbor.
+  severity: medium
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ maximum-routes \\d+"
+  fix: |
+    router bgp 65000
+       neighbor 192.0.2.1 maximum-routes 12000
+
+- id: stig-v-256039-bgp-gtsm
+  description: >-
+    STIG V-256039: eBGP peering sessions must use GTSM (neighbor ...
+    ttl maximum-hops) to protect the control plane from spoofed off-path
+    packets. Confirms it's set on at least one neighbor.
+  severity: medium
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ ttl maximum-hops \\d+"
+  fix: |
+    router bgp 65000
+       neighbor 192.0.2.1 ttl maximum-hops 2
+
+- id: stig-v-256048-bgp-ibgp-loopback-source
+  description: >-
+    STIG V-256048: iBGP sessions must source from the router's loopback
+    address (neighbor ... update-source Loopback), not a physical
+    interface, for session resilience.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*(neighbor \\S+|\\S+) update-source Loopback\\d+"
+  fix: |
+    router bgp 65000
+       neighbor 192.0.2.1 update-source Loopback0
+
+- id: stig-v-255988-255989-255990-255996-bgp-inbound-filtering
+  description: >-
+    STIG V-255988/255989/255990/255996: BGP neighbors must have inbound
+    route filtering (rejecting bogon prefixes, the local AS, unauthorized
+    customer prefixes, and unauthorized originating AS respectively — all
+    four STIG items require an inbound prefix-list, route-map, or as-path
+    filter on the neighbor). Consolidated into one check because the
+    filter names in each STIG's examples are illustrative, not fixed
+    strings — this can only confirm *some* inbound policy is applied to at
+    least one neighbor, not that its content actually excludes the right
+    prefixes/AS numbers.
+  severity: medium
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ (prefix-list|route-map) \\S+ in\\b"
+  fix: |
+    ip prefix-list PL_IN seq 10 deny 10.0.0.0/8 le 32
+    ip prefix-list PL_IN seq 100 permit 0.0.0.0/0 le 24
+    !
+    router bgp 65000
+       address-family ipv4
+          neighbor 192.0.2.1 activate
+          neighbor 192.0.2.1 prefix-list PL_IN in
+    # Verified live: the plain "neighbor ... prefix-list ... in" form at the
+    # top level of "router bgp" is rejected ("unsupported in all address
+    # family") — it must be issued under "address-family ipv4".
+
+- id: stig-v-255991-256020-256036-bgp-outbound-filtering
+  description: >-
+    STIG V-255991/256020/256036: BGP neighbors must have outbound route
+    filtering (advertising only customer/local-AS prefixes, excluding IP
+    core prefixes, and limiting advertised prefix sizes). Consolidated for
+    the same reason as the inbound-filtering rule above — confirms *some*
+    outbound policy exists on at least one neighbor, not its specific
+    content.
+  severity: medium
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ (prefix-list|route-map) \\S+ out\\b"
+  fix: |
+    ip prefix-list PL_OUT seq 10 permit 10.12.0.0/16
+    ip prefix-list PL_OUT seq 100 deny 0.0.0.0/0 le 32
+    !
+    router bgp 65000
+       address-family ipv4
+          neighbor 192.0.2.1 activate
+          neighbor 192.0.2.1 prefix-list PL_OUT out
+
+- id: stig-v-256002-256015-256017-256018-256021-256040-256041-256060-256061-perimeter-inbound-acl
+  description: >-
+    STIG V-256002/256015/256017/256018/256021/256040/256041/256060/256061:
+    perimeter and customer-facing interfaces must have an inbound ACL
+    enforcing deny-by-default/permit-by-exception, restricted to the site's
+    address space, blocking bogon sources, blocking traffic to IP core
+    infrastructure, dropping fragmented ICMP and packets with IP options,
+    and permitting only authorized source/destination pairs. Consolidated:
+    all nine are "some inbound ACL is applied to an external interface,"
+    just with different intended rule content we can't verify (the
+    ACL/prefix names in each STIG's examples are illustrative). Same
+    structural signal as V-255948 in the NDM pack (also an inbound ACL, but
+    on the management interface specifically) — tracked separately since
+    these are a distinct STIG chapter about perimeter/external interfaces.
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*ip access-group \\S+ in\\b"
+  fix: |
+    ip access-list PERIMETER_IN
+       10 permit ip 192.0.2.0/24 any
+       20 deny ip any any log
+    !
+    interface Ethernet1
+       ip access-group PERIMETER_IN in
+
+# --- IPv6 ---
+
+- id: stig-v-256057-ipv6-ra-hop-limit
+  description: >-
+    STIG V-256057: IPv6 Router Advertisements must advertise a hop limit of
+    at least 32 (ipv6 nd ra hop-limit). Only evaluated on devices with IPv6
+    addressing configured. Hop limit is a bounded 0-255 integer, so the
+    >= 32 threshold is enforced directly by the regex (an explicit
+    numeric-range alternation), not just presence of the line — a value
+    of 31 or below correctly fails.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  require:
+    - "(?im)^\\s*ipv6 nd ra hop-limit (3[2-9]|[4-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\b"
+  fix: |
+    interface Ethernet1
+       ipv6 nd ra hop-limit 32
+
+- id: stig-v-256058-no-ipv6-site-local
+  description: >-
+    STIG V-256058: IPv6 Unique Local/Site-Local addresses (FEC0::/10) must
+    not be used. Only evaluated on devices with IPv6 addressing configured.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  forbid:
+    - "(?im)^\\s*ipv6 address fec0:"
+  fix: |
+    interface Ethernet1
+       no ipv6 address fec0:1::1/64
+       ipv6 address 2001:db8::1/64
+
+- id: stig-v-256059-ipv6-ra-suppressed-external
+  description: >-
+    STIG V-256059: Router Advertisements must be suppressed on external
+    IPv6-enabled interfaces (ipv6 nd ra disabled all). Only evaluated on
+    devices with IPv6 addressing configured. Confirms RA suppression is
+    used somewhere; does not verify every external interface has it.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  require:
+    - "(?im)^\\s*ipv6 nd ra disabled all"
+  fix: |
+    interface Ethernet1
+       ipv6 nd ra disabled all
+
+- id: stig-v-256019-256033-256044-perimeter-outbound-acl
+  description: >-
+    STIG V-256019/256033/256044: perimeter interfaces must filter egress
+    traffic — including blocking ICMP mask-reply reconnaissance messages
+    and outbound management-subnet traffic — from leaving the perimeter.
+    Consolidated for the same reason as the inbound ACL rule — confirms
+    *some* outbound ACL exists, not its specific content.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*ip access-group \\S+ out\\b"
+  fix: |
+    ip access-list PERIMETER_OUT
+       10 deny icmp any any mask-reply
+       20 permit ip any any
+    !
+    interface Ethernet1
+       ip access-group PERIMETER_OUT out
+
+- id: stig-v-256030-no-gratuitous-arp
+  description: >-
+    STIG V-256030: gratuitous ARP acceptance must not be enabled on
+    external interfaces. Rejected by default on Arista EOS, so absence of
+    the accepting line is already compliant — this only flags an explicit
+    `arp gratuitous accept` turning it on.
+  severity: low
+  platforms: [arista_eos]
+  forbid:
+    - "(?im)^\\s*arp gratuitous accept"
+  fix: |
+    interface Ethernet1
+       no arp gratuitous accept
+
+- id: stig-v-256032-icmp-unreachable-rate-limited
+  description: >-
+    STIG V-256032: ICMP unreachable notifications from external interfaces
+    must be suppressed (ip icmp rate-limit-unreachable 0), preventing
+    network reconnaissance via unreachable-triggered probing.
+  severity: low
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*ip icmp rate-limit-unreachable 0"
+  fix: |
+    ip icmp rate-limit-unreachable 0
+
+- id: stig-v-256042-no-lldp-external
+  description: >-
+    STIG V-256042: LLDP (and CDP-equivalent discovery protocols) must be
+    disabled on external interfaces, or globally, to avoid leaking topology
+    information off-network. Confirms LLDP is disabled somewhere (globally
+    or per-interface); does not verify it's off on every external
+    interface specifically.
+  severity: low
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*(no lldp run|no lldp transmit|no lldp receive)"
+  fix: |
+    interface Ethernet1
+       no lldp transmit
+       no lldp receive
+    # Or disable globally instead of per-interface: "no lldp run"
+
+- id: stig-v-256043-no-proxy-arp-external
+  description: >-
+    STIG V-256043: IP Proxy ARP must be disabled on external interfaces to
+    prevent the router from answering ARP requests on behalf of other
+    hosts across network boundaries. Verified against a real EOS 4.33
+    device (`show ip interface`): Proxy-ARP is disabled by default, and EOS
+    doesn't echo the redundant `no ip proxy-arp` into running-config when
+    it's already at that default — so requiring the explicit `no` line
+    would have failed even fully-compliant devices. Forbids the explicit
+    enabling form instead.
+  severity: low
+  platforms: [arista_eos]
+  forbid:
+    - "(?im)^\\s*ip proxy-arp\\b"
+  fix: |
+    interface Ethernet1
+       no ip proxy-arp
+    # Disabled by default on EOS — this fix is only needed if something
+    # explicitly re-enabled it with "ip proxy-arp".
+
+- id: stig-v-256008-acl-deny-logging
+  description: >-
+    STIG V-256008: ACL deny rules must log denied packets (so audit records
+    include which interface dropped them). Confirms at least one deny rule
+    anywhere uses the `log` keyword; does not verify every relevant ACL
+    does.
+  severity: medium
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^ip access-list \\S+"
+  require:
+    - "(?im)^\\s*\\d*\\s*deny .*\\blog\\b"
+  fix: |
+    ip access-list PERIMETER_IN
+       20 deny ip any any log
+
+- id: stig-v-256016-control-plane-policing
+  description: >-
+    STIG V-256016: the router must restrict traffic destined to the route
+    processor itself via control-plane policing (policy-map type copp) or
+    an equivalent receive-path ACL, to protect the control plane from
+    flooding/DoS. Confirms a CoPP policy-map exists; doesn't verify its
+    classes actually cover the traffic types the STIG lists (LLDP, etc.).
+  severity: high
+  platforms: [arista_eos]
+  require:
+    - "(?im)^policy-map type copp"
+  fix: |
+    policy-map type copp copp-system-policy
+       class copp-system-lldp
+          bandwidth kbps 500
+
+- id: stig-v-256022-urpf-loose-mode-ce
+  description: >-
+    STIG V-256022: uRPF loose mode (ip verify unicast source reachable-via
+    any) must be enabled on CE-facing interfaces to drop packets with
+    unroutable source addresses. Confirms it's used on at least one
+    interface; does not verify every CE-facing interface.
+  severity: medium
+  platforms: [arista_eos]
+  notes: >-
+    Platform dependency: confirmed on a real EOS 4.33 device
+    (GNS3 vEOS-lab) that `ip verify unicast source reachable-via` is
+    rejected outright as "not supported on this hardware platform" — uRPF
+    requires ASIC support the virtual platform doesn't emulate. A fail here
+    on virtual/lab Arista devices doesn't necessarily mean noncompliance;
+    it may mean the platform can't do uRPF at all. Needs real hardware to
+    validate meaningfully.
+  require:
+    - "(?im)^\\s*ip verify unicast source reachable-via any"
+  fix: |
+    interface Ethernet1
+       ip verify unicast source reachable-via any
+
+- id: stig-v-256026-urpf-strict-mode-internal
+  description: >-
+    STIG V-256026: uRPF strict mode (ip verify unicast source
+    reachable-via rx) must be enabled on internal interfaces to prevent
+    egress of spoofed-source packets. Confirms it's used on at least one
+    interface; does not verify every internal interface.
+  severity: medium
+  platforms: [arista_eos]
+  notes: >-
+    Platform dependency: same as V-256022 — confirmed on a real EOS 4.33
+    device (GNS3 vEOS-lab) that `ip verify unicast source reachable-via` is
+    rejected as "not supported on this hardware platform." Needs real
+    hardware to validate.
+  require:
+    - "(?im)^\\s*ip verify unicast source reachable-via rx"
+  fix: |
+    interface Ethernet1
+       ip verify unicast source reachable-via rx
+
+# --- Multicast (PIM / MSDP / IGMP-MLD) ---
+# V-255998 ("PIM must only be enabled on interfaces that require multicast
+# routing") is excluded: verifying an interface actually *needs* multicast
+# requires topology knowledge no config-text check can determine.
+
+- id: stig-v-255999-pim-neighbor-filter
+  description: >-
+    STIG V-255999: PIM-enabled interfaces must bind a neighbor filter ACL
+    restricting which routers can form PIM adjacencies. Only evaluated on
+    devices running PIM. Confirms a neighbor filter is used somewhere; does
+    not verify every PIM interface has one. Verified against a real EOS
+    4.33 device: the STIG's example command
+    (`pim ipv4 neighbor-filter`, one hyphenated word) doesn't exist — the
+    actual command is `pim ipv4 neighbor filter` (two words).
+  severity: medium
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^\\s*pim ipv4 sparse-mode"
+  require:
+    - "(?im)^\\s*pim ipv4 neighbor filter \\S+"
+  fix: |
+    ip access-list standard PIM_NEIGHBORS
+       permit 192.0.2.0/24
+    !
+    interface Ethernet1
+       pim ipv4 neighbor filter PIM_NEIGHBORS
+
+- id: stig-v-256000-multicast-admin-boundary
+  description: >-
+    STIG V-256000: administratively-scoped multicast ranges must be bounded
+    at the network edge (multicast ipv4 boundary ... out). Only evaluated on
+    devices running PIM.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^\\s*pim ipv4 sparse-mode"
+  require:
+    - "(?im)^\\s*multicast ipv4 boundary \\S+ out"
+  fix: |
+    ip access-list standard ADMIN_SCOPE
+       10 deny 239.0.0.0/8
+       20 permit 224.0.0.0/4
+    !
+    interface Ethernet1
+       multicast ipv4 boundary ADMIN_SCOPE out
+
+- id: stig-v-256007-pim-rp-group-filter
+  description: >-
+    STIG V-256007: the multicast Rendezvous Point must filter PIM
+    Register/Join messages to approved groups/sources (rp address ...
+    access-list). Only evaluated on devices running PIM.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^\\s*pim ipv4 sparse-mode"
+  require:
+    - "(?im)^\\s*rp address \\S+ access-list \\S+"
+  fix: |
+    ip access-list standard ALLOWED_RP
+       10 permit 224.0.0.0/8
+    !
+    router pim sparse-mode
+       ipv4
+          rp address 192.0.2.9 access-list ALLOWED_RP
+
+- id: stig-v-256038-pim-spt-threshold-infinity
+  description: >-
+    STIG V-256038: the SPT threshold should be set to infinity (or raised
+    from the 0 default) on last-hop multicast routers to minimize
+    per-source multicast state. Only evaluated on devices running PIM.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^\\s*pim ipv4 sparse-mode"
+  require:
+    - "(?im)^\\s*spt threshold infinity"
+  fix: |
+    router pim sparse-mode
+       ipv4
+          spt threshold infinity
+
+- id: stig-v-256045-256046-igmp-report-filtering
+  description: >-
+    STIG V-256045/256046: the multicast Designated Router must filter IGMP
+    /MLD report messages to approved groups and SSM sources (ip igmp
+    access-group, or an SSM range bound in the PIM process). Only evaluated
+    on devices running PIM. Confirms one of the filtering mechanisms is
+    used somewhere.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^\\s*pim ipv4 sparse-mode"
+  require:
+    - "(?im)^\\s*(ip igmp access-group \\S+|ssm range \\S+)"
+  fix: |
+    ip access-list standard ALLOWED_SOURCES
+       10 permit 232.0.0.0/8
+    !
+    router pim sparse-mode
+       ipv4
+          ssm range ALLOWED_SOURCES
+    # Verified live: this form (under "router pim sparse-mode / ipv4") works.
+    # The STIG's alternative "ip igmp access-group" command doesn't exist on
+    # EOS 4.33 — "ip igmp" has no "access-group" subcommand on that release.
+
+- id: stig-v-255993-msdp-inbound-sa-filter
+  description: >-
+    STIG V-255993: MSDP peers must have an inbound source-active filter to
+    block undesirable multicast group advertisements (sa-filter in). Only
+    evaluated on devices running MSDP.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router msdp"
+  require:
+    - "(?im)^\\s*sa-filter in \\S+"
+  fix: |
+    ip access-list FILTER_IN
+       10 deny ip any 224.1.1.0/24
+       100 permit ip any any
+    !
+    router msdp
+       peer 192.0.2.10
+          sa-filter in list FILTER_IN
+    # Verified live: the "list" keyword is required — "sa-filter in FILTER_IN"
+    # alone is rejected as invalid input.
+
+- id: stig-v-255994-msdp-outbound-sa-filter
+  description: >-
+    STIG V-255994: MSDP peers must have an outbound source-active filter to
+    prevent leaking local-only multicast sources to external peers
+    (sa-filter out). Only evaluated on devices running MSDP.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router msdp"
+  require:
+    - "(?im)^\\s*sa-filter out \\S+"
+  fix: |
+    ip access-list FILTER_OUT
+       10 deny ip any 224.1.1.0/24
+       100 permit ip any any
+    !
+    router msdp
+       peer 192.0.2.10
+          sa-filter out list FILTER_OUT
+
+- id: stig-v-255995-256037-msdp-sa-limit
+  description: >-
+    STIG V-255995/256037: MSDP peers must limit the number of accepted
+    source-active messages (sa-limit) to prevent forwarding-cache
+    exhaustion. Only evaluated on devices running MSDP. Confirms a limit is
+    set on at least one peer.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router msdp"
+  require:
+    - "(?im)^\\s*sa-limit \\d+"
+  fix: |
+    router msdp
+       peer 192.0.2.10
+          sa-limit 500
+
+- id: stig-v-256047-msdp-peer-acl
+  description: >-
+    STIG V-256047: MSDP peering (TCP port 639) must be restricted to known
+    peers via an inbound ACL. Only evaluated on devices running MSDP. Same
+    weak "some inbound ACL exists" signal as the other ACL-based rules —
+    can't verify it's specifically restricting MSDP peers.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router msdp"
+  require:
+    - "(?im)^\\s*ip access-group \\S+ in\\b"
+  fix: |
+    ip access-list MSDP_PEERS
+       10 permit tcp host 192.0.2.10 host 192.0.2.1 eq 639
+       20 deny ip any any log
+    !
+    interface Ethernet1
+       ip access-group MSDP_PEERS in
+
+- id: stig-v-256056-msdp-loopback-source
+  description: >-
+    STIG V-256056: originated MSDP traffic must source from the router's
+    loopback address (originator-id local-interface Loopback). Only
+    evaluated on devices running MSDP.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router msdp"
+  require:
+    - "(?im)^\\s*originator-id local-interface Loopback\\d+"
+  fix: |
+    router msdp
+       originator-id local-interface Loopback0
+
+- id: stig-v-256010-ospf-md-authentication
+  description: >-
+    STIG V-256010: OSPFv2 interfaces must use SHA-256 message-digest
+    authentication, not MD5 (ip ospf authentication message-digest /
+    ip ospf message-digest-key ... sha256). Only evaluated on devices
+    running OSPF. Confirms message-digest auth is used somewhere and flags
+    any MD5 key; does not verify every OSPF interface.
+  severity: high
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router ospf \\d+"
+  require:
+    - "(?im)^\\s*ip ospf authentication message-digest"
+  forbid:
+    - "(?im)^\\s*ip ospf message-digest-key \\d+ md5"
+  fix: |
+    interface Ethernet1
+       ip ospf authentication message-digest
+       ip ospf message-digest-key 1 sha256 0 <key>
+
+- id: stig-v-256010-256027-bgp-neighbor-authentication
+  description: >-
+    STIG V-256010/256027: BGP peering sessions must be authenticated, and
+    each peer must use a unique key. Only evaluated on devices running BGP.
+    Simplified check for a password/shared secret on at least one neighbor;
+    doesn't verify every neighbor has one or that keys are actually unique
+    per peer (that requires comparing secret values, which aren't visible
+    in running-config), and the full V-256010 also requires a management
+    security profile with 180-day key rotation, which isn't checkable from
+    static config text.
+  severity: high
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ password"
+  fix: |
+    router bgp 65000
+       neighbor 192.0.2.1 password 0 <unique-key-per-peer>
+
+# --- MPLS / VRF ---
+
+- id: stig-v-256011-rsvp-refresh-reduction
+  description: >-
+    STIG V-256011: MPLS RSVP-TE must use the default bundled refresh method
+    (Refresh Overhead Reduction, RFC 2961), not explicit per-message
+    refresh, to avoid signaling bursts. Only evaluated on devices running
+    MPLS RSVP. Bundled is the default, so this only flags an explicit
+    override back to `explicit`.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^mpls rsvp"
+  forbid:
+    - "(?im)^\\s*refresh method explicit"
+  fix: |
+    mpls rsvp
+       refresh method bundled
+    # Or simply remove any "refresh method explicit" line — bundled is
+    # already the default.
+
+- id: stig-v-256049-ldp-loopback-source
+  description: >-
+    STIG V-256049: LDP sessions must source from the router's loopback
+    address (mpls ldp router-id interface Loopback), not a physical
+    interface. Only evaluated on devices running MPLS LDP.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^mpls ldp"
+  require:
+    - "(?im)^\\s*router-id interface Loopback\\d+"
+  fix: |
+    mpls ldp
+       router-id interface Loopback0
+       no shutdown
+
+- id: stig-v-256050-ldp-igp-sync
+  description: >-
+    STIG V-256050: LDP must be synchronized with the IGP (mpls ldp sync /
+    mpls ldp igp sync) to avoid packet loss while label exchange completes.
+    Only evaluated on devices running MPLS LDP.
+  severity: low
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^mpls ldp"
+  require:
+    - "(?im)mpls ldp (sync default|igp sync)"
+  fix: |
+    mpls ldp
+       mpls ldp sync default
+    # Verified live: this line is accepted directly under "mpls ldp".
+
+- id: stig-v-256051-no-mpls-ttl-propagation
+  description: >-
+    STIG V-256051: TTL propagation into MPLS-encapsulated packets must be
+    disabled at label edge routers to prevent core topology discovery via
+    traceroute. Only evaluated on devices running MPLS. Unlike proxy-arp
+    and directed-broadcast, testing on a real EOS device was inconclusive
+    here — `no mpls icmp ttl-exceeded tunneling` was accepted by the CLI
+    but didn't appear in running-config, possibly because MPLS forwarding
+    wasn't operationally active (no working LDP/RSVP session) in that test
+    rather than because the setting already matched a compliant default.
+    Left as a require check since the STIG's own framing implies this is
+    on by default; flag if it shows spurious failures on real hardware.
+  severity: medium
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^mpls ip"
+  require:
+    - "(?im)^\\s*no mpls icmp ttl-exceeded tunneling"
+  fix: |
+    no mpls icmp ttl-exceeded tunneling
+
+- id: stig-v-256052-vrf-interface-binding
+  description: >-
+    STIG V-256052: each configured VRF must actually be bound to a
+    customer-facing interface, not just declared. Only evaluated on devices
+    with at least one VRF instance defined. Confirms an interface-level
+    `vrf <name>` binding exists somewhere; doesn't verify every VRF has one
+    or that it's on the right interface.
+  severity: high
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^vrf instance \\S+"
+  require:
+    - "(?im)^\\s*vrf \\S+$"
+  fix: |
+    interface Ethernet2
+       vrf PROD
+       ip address 192.0.2.5/24
+
+- id: stig-v-256053-vrf-route-target
+  description: >-
+    STIG V-256053: each VRF used for L3VPN must have route-target
+    import/export configured. Only evaluated on devices with a VRF
+    instance defined. Confirms route-targets are configured somewhere;
+    can't verify the values are correct for your actual VPN design.
+  severity: high
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^vrf instance \\S+"
+  require:
+    - "(?im)^\\s*route-target (import|export) vpn-ipv4 \\S+"
+  fix: |
+    router bgp 65000
+       vrf PROD
+          route-target import vpn-ipv4 65000:1
+          route-target export vpn-ipv4 65000:1
+
+- id: stig-v-256054-vrf-route-distinguisher
+  description: >-
+    STIG V-256054: each VRF used for L3VPN must have a Route Distinguisher
+    configured. Only evaluated on devices with a VRF instance defined.
+    Confirms an RD is configured somewhere; can't verify it's the correct
+    or a unique value for your design.
+  severity: medium
+  platforms: [arista_eos]
+  applies_if:
+    - "(?im)^vrf instance \\S+"
+  require:
+    - "(?im)^\\s*rd \\S+"
+  fix: |
+    router bgp 65000
+       vrf PROD
+          rd 65000:1
+
+- id: stig-v-256034-icmp-redirect-filtered
+  description: >-
+    STIG V-256034: the router must not send ICMP Redirect messages out
+    external interfaces (ACL denying icmp redirect, applied outbound).
+    Confirms the denying ACL rule exists somewhere; does not verify it's
+    applied to every external interface. Verified against a real EOS 4.33
+    device: ACL entries are stored with a leading sequence number
+    (`10 deny icmp any any redirect`), which the original pattern didn't
+    account for and would have always failed on a real device.
+  severity: medium
+  platforms: [arista_eos]
+  require:
+    - "(?im)^\\s*\\d*\\s*deny icmp any any redirect"
+  fix: |
+    ip access-list ICMP_REDIRECT
+       10 deny icmp any any redirect
+       20 permit ip any any
+    !
+    interface Ethernet1
+       ip access-group ICMP_REDIRECT out
+
+- id: stig-v-256031-no-ip-directed-broadcast
+  description: >-
+    STIG V-256031: IP directed broadcast must not be enabled on Layer 3
+    interfaces. Disabled by default on Arista EOS, so absence of the
+    enabling line is already compliant — this only flags an explicit
+    `ip directed-broadcast` line turning it back on.
+  severity: medium
+  platforms: [arista_eos]
+  forbid:
+    - "(?im)^\\s*ip directed-broadcast\\b"
+  fix: |
+    interface Ethernet1
+       no ip directed-broadcast
+    # Disabled by default on EOS — this fix is only needed if something
+    # explicitly re-enabled it.
+
+# --- QoS ---
+
+- id: stig-v-256012-qos-dos-mitigation
+  description: >-
+    STIG V-256012: a QoS policy (tx-queue bandwidth allocation) must be
+    configured to limit the impact of packet-flooding DoS attacks. Confirms
+    a tx-queue bandwidth-percent setting exists somewhere; does not verify
+    it's applied to every interface or that the allocation is sensible.
+  severity: medium
+  platforms: [arista_eos]
+  notes: >-
+    Platform dependency: confirmed on a real EOS 4.33 device (GNS3
+    vEOS-lab) that `tx-queue` is rejected as "not supported on this
+    hardware platform" — the virtual platform doesn't emulate hardware
+    queues. Needs real hardware to validate.
+  require:
+    - "(?im)^\\s*tx-queue \\d+ bandwidth percent \\d+"
+  fix: |
+    interface Ethernet1
+       tx-queue 1
+          bandwidth percent 20

@@ -1,0 +1,373 @@
+# Cisco NX-OS rules derived from the DISA "Cisco NX-OS Switch RTR" STIG.
+# V-IDs are cited in each description. Protocol-specific findings are gated
+# with `applies_if` so they're only evaluated on devices actually running
+# that protocol/feature (NX-OS additionally requires the relevant `feature`
+# to be enabled before most of these commands even exist).
+#
+# Same exclusion rationale as the IOS-XE Router STIG: findings needing
+# organizational network-boundary/topology knowledge, bogon/prefix
+# allow-lists, VPWS/VPLS/PE-CE-specific config, "mission-critical
+# application" QoS classification, or an org-defined multicast
+# source/group allow-list are omitted rather than approximated. Also
+# excluded: V-221073 (180-day max key age — needs key-rotation history, not
+# config text), V-221081 (drop fragmented ICMP — no confirmed NX-OS command
+# found without guessing), V-221083 (IP directed broadcast — NX-OS doesn't
+# expose a config toggle for this the way IOS does), V-221082 (gratuitous
+# ARP — no confirmed NX-OS global toggle found without guessing).
+# V-221071/221072/221074/221075 (generic routing-protocol message
+# authentication/encryption/FIPS-198-1 requirements) are consolidated into
+# the BGP neighbor-password check below rather than kept as separate
+# unchecked findings.
+#
+# A few commands below (marked with `notes`) are best-effort based on
+# documented NX-OS syntax but haven't been live-verified against a real
+# NX-OS device yet — confirm on the lab N9K before trusting them fully.
+
+# --- General ---
+
+- id: stig-v-221084-icmp-unreachables-disabled
+  description: >-
+    STIG V-221084: ICMP unreachable messages must be disabled on external
+    interfaces to avoid network reconnaissance. Confirms it's disabled on
+    at least one interface; does not verify every external interface.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*no ip unreachables"
+  fix: |
+    interface Ethernet1/1
+     no ip unreachables
+
+- id: stig-v-221085-icmp-redirects-disabled
+  description: >-
+    STIG V-221085: ICMP redirect messages must be disabled on external
+    interfaces. Confirms it's disabled on at least one interface; does not
+    verify every external interface.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*no ip redirects"
+  fix: |
+    interface Ethernet1/1
+     no ip redirects
+
+- id: stig-v-221098-proxy-arp-disabled
+  description: >-
+    STIG V-221098: Proxy ARP must be disabled on external interfaces.
+    Forbid-style check — Proxy ARP defaults to disabled, so the risk is an
+    explicit `ip proxy-arp` line, not the absence of a disable command.
+  severity: high
+  platforms: [cisco_nxos]
+  forbid:
+    - "(?im)^\\s*ip proxy-arp$"
+  fix: |
+    interface Ethernet1/1
+     no ip proxy-arp
+
+- id: stig-v-221086-acl-log-dropped-packets
+  description: >-
+    STIG V-221086: ACLs must log denied/dropped packets so blocked traffic
+    is auditable. Confirms at least one `deny ... log` ACE exists somewhere;
+    does not verify every deny-all ACL has logging.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*deny\\b.*\\blog\\b"
+  fix: |
+    ip access-list EDGE_IN
+     10 deny ip any any log
+
+- id: stig-v-221096-lldp-disabled-external
+  description: >-
+    STIG V-221096: LLDP must be disabled on external-facing interfaces to
+    avoid leaking topology information off-network. Confirms it's disabled
+    on at least one interface; does not verify every external interface.
+  severity: medium
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^feature lldp$"
+  require:
+    - "(?im)^\\s*(no lldp transmit|no lldp receive)"
+  fix: |
+    interface Ethernet1/1
+     no lldp transmit
+     no lldp receive
+
+- id: stig-v-221097-cdp-disabled-external
+  description: >-
+    STIG V-221097: CDP must be disabled on external-facing interfaces to
+    avoid leaking topology information off-network. Confirms it's disabled
+    on at least one interface; does not verify every external interface.
+  severity: medium
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*no cdp enable"
+  fix: |
+    interface Ethernet1/1
+     no cdp enable
+
+- id: stig-v-221127-urpf-ce-facing
+  description: >-
+    STIG V-221127: unicast Reverse Path Forwarding must be enabled to
+    reject packets with spoofed source addresses. Confirms it's used on at
+    least one interface; does not verify every customer/external interface.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^\\s*ip verify unicast source reachable-via"
+  fix: |
+    interface Ethernet1/1
+     ip verify unicast source reachable-via rx
+
+- id: stig-v-221078-call-home-disabled
+  description: >-
+    STIG V-221078: vendor call-home/telemetry features must be disabled
+    unless explicitly required and secured.
+  severity: high
+  platforms: [cisco_nxos]
+  forbid:
+    - "(?im)^feature call-home$"
+  fix: |
+    no feature call-home
+
+- id: stig-v-221079-control-plane-protection
+  description: >-
+    STIG V-221079: control plane protection must be configured to protect
+    the supervisor from denial-of-service packet floods. NX-OS applies this
+    via a built-in CoPP profile rather than a custom policy-map.
+  severity: high
+  platforms: [cisco_nxos]
+  require:
+    - "(?im)^copp profile \\S+"
+  fix: |
+    copp profile strict
+
+# --- BGP ---
+
+- id: stig-v-221072-bgp-neighbor-auth
+  description: >-
+    STIG V-221071/221072/221074/221075: routing protocol peers must be
+    authenticated using an encrypted, FIPS 198-1 compliant method.
+    Consolidated into one check — checks for a password on at least one
+    BGP neighbor; does not verify FIPS algorithm strength or that every
+    neighbor is authenticated.
+  severity: high
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ password"
+  fix: |
+    router bgp 65000
+     neighbor 192.0.2.1 password <strong-key>
+
+- id: stig-v-221110-bgp-maximum-prefix
+  description: >-
+    STIG V-221110: BGP must be configured with a maximum-prefix limit per
+    neighbor to protect against route-table exhaustion attacks.
+  severity: high
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ maximum-prefix \\d+"
+  fix: |
+    router bgp 65000
+     neighbor 192.0.2.1 maximum-prefix 1000
+
+- id: stig-v-221112-ibgp-loopback-source
+  description: >-
+    STIG V-221112: iBGP sessions must use a loopback interface as the
+    source address for resiliency against link-specific failures.
+  severity: medium
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*update-source [Ll]oopback\\d+"
+  fix: |
+    router bgp 65000
+     neighbor 192.0.2.1
+      update-source loopback0
+
+# --- MPLS / VRF ---
+
+- id: stig-v-221116-mpls-ttl-propagate-disabled
+  description: >-
+    STIG V-221116: MPLS TTL propagation must be disabled so the internal
+    MPLS core topology isn't exposed via traceroute.
+  severity: high
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^feature mpls"
+  require:
+    - "(?im)^no mpls ip propagate-ttl"
+  fix: |
+    no mpls ip propagate-ttl
+
+- id: stig-v-221120-ldp-session-auth
+  description: >-
+    STIG V-221120: targeted LDP sessions must be authenticated with a
+    FIPS-approved algorithm to prevent unauthorized label distribution
+    peers.
+  severity: high
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^feature mpls"
+  require:
+    - "(?im)^mpls ldp neighbor \\S+ password"
+  fix: |
+    mpls ldp neighbor 192.0.2.1 password <strong-key>
+
+- id: stig-v-221113-ldp-loopback-source
+  description: >-
+    STIG V-221113: LDP must use a loopback interface for resiliency against
+    link-specific failures.
+  severity: medium
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^feature mpls"
+  require:
+    - "(?im)^mpls ldp router-id [Ll]oopback\\d+"
+  fix: |
+    mpls ldp router-id loopback0
+
+- id: stig-v-221114-ldp-igp-sync
+  description: >-
+    STIG V-221114: LDP-IGP synchronization must be enabled so traffic isn't
+    forwarded on a link before its label bindings converge.
+  severity: medium
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^feature mpls"
+  require:
+    - "(?im)^\\s*mpls ldp sync"
+  fix: |
+    router ospf 1
+     mpls ldp sync
+
+- id: stig-v-221117-vrf-configuration
+  description: >-
+    STIG V-221117/221118/221119: VRF instances must be bound to the
+    appropriate interfaces with a Route Distinguisher and Route Target
+    configured. Consolidated into one check. Weak check — confirms a VRF
+    with an RD exists; cannot verify RT/interface binding correctness from
+    flat regex.
+  severity: high
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^vrf context \\S+"
+  require:
+    - "(?im)^\\s*rd \\d+:\\d+"
+  fix: |
+    vrf context CUSTOMER_A
+     rd 65000:100
+     address-family ipv4 unicast
+      route-target export 65000:100
+      route-target import 65000:100
+
+# --- Multicast (PIM / MSDP) ---
+
+- id: stig-v-221133-pim-neighbor-policy
+  description: >-
+    STIG V-221133: a PIM neighbor policy must be bound to interfaces
+    running PIM to prevent unauthorized routers from becoming PIM
+    neighbors. NX-OS uses a route-map-based `neighbor-policy`, unlike
+    IOS-XE's ACL-based `neighbor-filter`.
+  severity: high
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — confirm this
+    command exists on the target NX-OS train before relying on it.
+  applies_if:
+    - "(?im)^\\s*ip pim sparse-mode"
+  require:
+    - "(?im)^\\s*ip pim neighbor-policy \\S+"
+  fix: |
+    route-map PIM_NEIGHBORS permit 10
+     match ip address PIM_NEIGHBOR_ACL
+    !
+    interface Ethernet1/1
+     ip pim neighbor-policy PIM_NEIGHBORS
+
+- id: stig-v-221141-pim-spt-threshold-infinity
+  description: >-
+    STIG V-221141: the SPT threshold must be set to infinity in
+    Any-Source Multicast deployments to prevent uncontrolled (S,G)
+    shortest-path-tree state growth.
+  severity: medium
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^\\s*ip pim sparse-mode"
+  require:
+    - "(?im)^ip pim spt-threshold infinity"
+  fix: |
+    ip pim spt-threshold infinity
+
+- id: stig-v-221142-msdp-authentication
+  description: >-
+    STIG V-221142/221143: MSDP peer sessions must be accepted only from
+    known, authenticated peers to prevent unauthorized source-active
+    advertisements.
+  severity: high
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^feature msdp"
+  require:
+    - "(?im)^ip msdp password \\S+ \\S+"
+  fix: |
+    feature msdp
+    ip msdp peer 192.0.2.1
+    ip msdp password 192.0.2.1 <strong-key>
+
+# --- IPv6 ---
+
+- id: stig-v-237754-ipv6-ra-hop-limit
+  description: >-
+    STIG V-237754: IPv6 Router Advertisements must use a hop limit of at
+    least 32. Numeric threshold check (not just presence) — matches any
+    configured value of 32 or higher.
+  severity: high
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — confirm this
+    command exists on the target NX-OS train before relying on it.
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  require:
+    - "(?im)^ipv6 hop-limit (3[2-9]|[4-9]\\d|[1-9]\\d{2,})\\b"
+  fix: |
+    ipv6 hop-limit 64
+
+- id: stig-v-237757-no-ipv6-site-local
+  description: >-
+    STIG V-237757: IPv6 Site Local Unicast addresses (deprecated FEC0::/10)
+    must not be configured.
+  severity: high
+  platforms: [cisco_nxos]
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  forbid:
+    - "(?im)^\\s*ipv6 address fec0:"
+  fix: |
+    interface Ethernet1/1
+     no ipv6 address FEC0::1/64
+     ipv6 address 2001:DB8::1/64
+
+- id: stig-v-237760-ipv6-ra-suppress
+  description: >-
+    STIG V-237760: Router Advertisements must be suppressed on external
+    IPv6 interfaces where they're not needed. Confirms it's used on at
+    least one interface; does not verify every external interface.
+  severity: medium
+  platforms: [cisco_nxos]
+  notes: >-
+    Not yet live-verified against a real NX-OS device — confirm this
+    command exists on the target NX-OS train before relying on it.
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  require:
+    - "(?im)^\\s*ipv6 nd suppress-ra"
+  fix: |
+    interface Ethernet1/1
+     ipv6 nd suppress-ra

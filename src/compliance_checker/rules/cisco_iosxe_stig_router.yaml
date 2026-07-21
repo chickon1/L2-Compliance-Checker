@@ -1,0 +1,471 @@
+# Cisco IOS-XE rules derived from the DISA "Cisco IOS XE Router RTR" STIG.
+# V-IDs are cited in each description. Protocol-specific findings are gated
+# with `applies_if` so they're only evaluated on devices actually running
+# that protocol/feature.
+#
+# This STIG document has ~97 findings, most written for a service-provider
+# router acting as a PE/P/CE box (MPLS L3VPN, VPWS/VPLS, BGP customer/peer
+# edge policy, multi-area IGP boundaries). The following categories are
+# intentionally excluded rather than approximated, because they require
+# facts a flat running-config regex check cannot obtain:
+#   - Anything needing organizational network-boundary/topology knowledge:
+#     "block traffic to core infra" (V-216711), "deny-all permit-by-exception
+#     policy" (V-216662), "authorized communications routing policy"
+#     (V-216664/216670), OOBM/NOC-specific forwarding (V-216677-684),
+#     inbound/outbound bogon and prefix-origin filtering that depends on a
+#     real allow-list (V-216665/216687-693/216997), DoD 8551.1 port/protocol
+#     filtering (V-216670).
+#   - VPWS/VPLS/PE-CE-specific findings (V-216705-716, V-216708, V-216710) —
+#     not applicable outside an MPLS L2VPN service-provider role.
+#   - QoS "mission-critical application" policy specifics (V-216714-716) —
+#     org-defined traffic classification, not a fixed command to check for.
+#   - Multicast findings needing an org-defined source/group allow-list
+#     (V-216719-726, V-216730-733) — filtering "approved" sources/groups
+#     can't be verified without that list.
+#   - V-216646 (disable inactive interfaces) — "inactive" is operational
+#     state, not config text.
+#   - V-216649 (disable zero-touch provisioning) — day-0/model-specific
+#     feature set, not a single portable command.
+#   - V-217000 (unique BGP key per AS) and V-216695 (limit inbound prefix
+#     size) — the STIG's own numeric/uniqueness judgment calls that need
+#     cross-device or organizational context.
+#   - V-216998/216999(dup)/217001 IP-options handling and V-216659/216660
+#     (audit record location/source fields) — duplicate or non-config-visible.
+# Some closely related findings are consolidated into a single check
+# documented per-rule below (V-230048/051/146/150/153/156/159 IPv6 extension
+# header filtering; V-216701/216702/216703 VRF configuration).
+
+# --- General / device hardening ---
+
+- id: stig-v-216653-gratuitous-arp-disabled
+  description: >-
+    STIG V-216653: gratuitous ARP must be disabled on external interfaces.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^no ip gratuitous-arps"
+  fix: |
+    no ip gratuitous-arps
+
+- id: stig-v-216676-proxy-arp-disabled
+  description: >-
+    STIG V-216676: Proxy ARP must be disabled on external interfaces, to
+    avoid leaking topology information and enabling ARP-based attacks.
+    Forbid-style check (not require) — Proxy ARP defaults to disabled on
+    most platforms, so the risk is an explicit `ip proxy-arp` line, not the
+    absence of a disable command.
+  severity: high
+  platforms: [cisco_ios]
+  forbid:
+    - "(?im)^\\s*ip proxy-arp$"
+  fix: |
+    interface GigabitEthernet0/0
+     no ip proxy-arp
+
+- id: stig-v-216655-icmp-unreachables-disabled
+  description: >-
+    STIG V-216655: ICMP unreachable messages must be disabled on external
+    interfaces to avoid network reconnaissance. Confirms it's disabled on
+    at least one interface; does not verify every external interface.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*no ip unreachables"
+  fix: |
+    interface GigabitEthernet0/0
+     no ip unreachables
+
+- id: stig-v-216656-icmp-mask-reply-disabled
+  description: >-
+    STIG V-216656: ICMP mask reply messages must be disabled. Forbid-style
+    check — disabled by default on IOS-XE, so the risk is an explicit
+    enable line, not the absence of a disable command.
+  severity: high
+  platforms: [cisco_ios]
+  forbid:
+    - "(?im)^\\s*ip mask-reply$"
+  fix: |
+    interface GigabitEthernet0/0
+     no ip mask-reply
+
+- id: stig-v-216657-icmp-redirects-disabled
+  description: >-
+    STIG V-216657: ICMP redirect messages must be disabled on external
+    interfaces. IOS-XE sends redirects by default, so this requires an
+    explicit disable. Confirms it's disabled on at least one interface;
+    does not verify every external interface.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*no ip redirects"
+  fix: |
+    interface GigabitEthernet0/0
+     no ip redirects
+
+- id: stig-v-216654-directed-broadcast-disabled
+  description: >-
+    STIG V-216654: IP directed broadcast must be disabled (default
+    disabled on IOS-XE — flags an explicit enable as the risk).
+  severity: high
+  platforms: [cisco_ios]
+  forbid:
+    - "(?im)^\\s*ip directed-broadcast$"
+  fix: |
+    interface GigabitEthernet0/0
+     no ip directed-broadcast
+
+- id: stig-v-216658-acl-log-dropped-packets
+  description: >-
+    STIG V-216658: ACLs must log denied/dropped packets so blocked traffic
+    is auditable. Confirms at least one `deny ... log` ACE exists somewhere;
+    does not verify every deny-all ACL has logging.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*(access-list \\d+ )?deny\\b.*\\blog\\b"
+  fix: |
+    ip access-list extended EDGE_IN
+     deny ip any any log
+
+- id: stig-v-216674-lldp-disabled-external
+  description: >-
+    STIG V-216674: LLDP must be disabled on external-facing interfaces to
+    avoid leaking topology information off-network. Confirms it's disabled
+    on at least one interface; does not verify every external interface.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*(no lldp transmit|no lldp receive)"
+  fix: |
+    interface GigabitEthernet0/0
+     no lldp transmit
+     no lldp receive
+
+- id: stig-v-216675-cdp-disabled-external
+  description: >-
+    STIG V-216675: CDP must be disabled on external-facing interfaces to
+    avoid leaking topology information off-network. Confirms it's disabled
+    on at least one interface; does not verify every external interface.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*no cdp enable"
+  fix: |
+    interface GigabitEthernet0/0
+     no cdp enable
+
+- id: stig-v-216712-urpf-ce-facing
+  description: >-
+    STIG V-216712/216997: unicast Reverse Path Forwarding must be enabled
+    to reject packets with spoofed source addresses. Confirms it's used on
+    at least one interface; does not verify every customer/external
+    interface.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*ip verify unicast source reachable-via"
+  fix: |
+    interface GigabitEthernet0/0
+     ip verify unicast source reachable-via rx
+
+- id: stig-v-216650-control-plane-protection
+  description: >-
+    STIG V-216650: control plane protection (CoPP) must be configured to
+    protect the route processor from denial-of-service packet floods.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^control-plane"
+    - "(?im)^\\s*service-policy input \\S+"
+  fix: |
+    policy-map COPP_POLICY
+     class CRITICAL
+      police 512000
+    !
+    control-plane
+     service-policy input COPP_POLICY
+
+- id: stig-v-216661-aux-port-disabled
+  description: >-
+    STIG V-216661: the auxiliary port must be disabled unless it's secured
+    and monitored equivalently to other management access. Weak check —
+    confirms EXEC access is disabled somewhere (`no exec` on some line);
+    cannot confirm it's specifically the aux line.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*no exec$"
+  fix: |
+    line aux 0
+     no exec
+     transport input none
+
+# --- BGP ---
+
+- id: stig-v-216645-bgp-neighbor-auth
+  description: >-
+    STIG V-216645: routing protocol peers must be authenticated. Checks for
+    an MD5 password on at least one BGP neighbor; does not verify FIPS
+    algorithm strength or that every neighbor is authenticated.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ password"
+  fix: |
+    router bgp 65000
+     neighbor 192.0.2.1 password <strong-key>
+
+- id: stig-v-216694-bgp-maximum-prefix
+  description: >-
+    STIG V-216694: BGP must be configured with a maximum-prefix limit per
+    neighbor to protect against route-table exhaustion attacks.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ maximum-prefix \\d+"
+  fix: |
+    router bgp 65000
+     neighbor 192.0.2.1 maximum-prefix 1000
+
+- id: stig-v-216696-ibgp-loopback-source
+  description: >-
+    STIG V-216696: iBGP sessions must use a loopback interface as the
+    source address for resiliency against link-specific failures.
+  severity: medium
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ update-source Loopback\\d+"
+  fix: |
+    router bgp 65000
+     neighbor 192.0.2.1 update-source Loopback0
+
+- id: stig-v-216999-bgp-gtsm
+  description: >-
+    STIG V-216999: the Generalized TTL Security Mechanism (GTSM) must be
+    used for BGP peering to reject spoofed off-path packets.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^router bgp \\d+"
+  require:
+    - "(?im)^\\s*neighbor \\S+ ttl-security hops \\d+"
+  fix: |
+    router bgp 65000
+     neighbor 192.0.2.1 ttl-security hops 1
+
+# --- MPLS ---
+
+- id: stig-v-216700-mpls-ttl-propagate-disabled
+  description: >-
+    STIG V-216700: MPLS TTL propagation must be disabled so the internal
+    MPLS core topology isn't exposed via traceroute.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^mpls ip$"
+  require:
+    - "(?im)^no mpls ip propagate-ttl"
+  fix: |
+    no mpls ip propagate-ttl
+
+- id: stig-v-216704-ldp-session-auth
+  description: >-
+    STIG V-216704: LDP sessions must be authenticated with a FIPS-approved
+    algorithm to prevent unauthorized label distribution peers.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^mpls ldp"
+  require:
+    - "(?im)^mpls ldp neighbor \\S+ password"
+  fix: |
+    mpls ldp neighbor 192.0.2.1 password <strong-key>
+
+- id: stig-v-216697-ldp-loopback-source
+  description: >-
+    STIG V-216697: LDP must use a loopback interface as its router-id for
+    resiliency against link-specific failures.
+  severity: medium
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^mpls ldp"
+  require:
+    - "(?im)^mpls ldp router-id Loopback\\d+"
+  fix: |
+    mpls ldp router-id Loopback0
+
+- id: stig-v-216698-ldp-igp-sync
+  description: >-
+    STIG V-216698: LDP-IGP synchronization must be enabled so traffic isn't
+    forwarded on a link before its label bindings converge.
+  severity: medium
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^mpls ldp"
+  require:
+    - "(?im)^\\s*mpls ldp igp sync"
+  fix: |
+    router ospf 1
+     mpls ldp sync
+
+# --- VRF ---
+
+- id: stig-v-216701-vrf-configuration
+  description: >-
+    STIG V-216701/216702/216703: VRF instances must be bound to the
+    appropriate interfaces with a Route Distinguisher and Route Target
+    configured. Consolidated into one check — the three findings describe
+    parts of the same VRF definition block. Weak check — confirms a VRF
+    with an RD exists; cannot verify RT/interface binding correctness from
+    flat regex.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^vrf definition \\S+"
+  require:
+    - "(?im)^\\s*rd \\d+:\\d+"
+  fix: |
+    vrf definition CUSTOMER_A
+     rd 65000:100
+     address-family ipv4
+      route-target export 65000:100
+      route-target import 65000:100
+
+# --- Multicast (PIM / MSDP) ---
+
+- id: stig-v-216718-pim-neighbor-filter
+  description: >-
+    STIG V-216718: a PIM neighbor filter must be bound to interfaces
+    running PIM to prevent unauthorized routers from becoming PIM
+    neighbors.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^\\s*ip pim sparse-mode"
+  require:
+    - "(?im)^\\s*ip pim neighbor-filter \\S+"
+  fix: |
+    ip access-list standard PIM_NEIGHBORS
+     permit 192.0.2.1
+    !
+    interface GigabitEthernet0/0
+     ip pim neighbor-filter PIM_NEIGHBORS
+
+- id: stig-v-216723-pim-register-rate-limit
+  description: >-
+    STIG V-216723: PIM Register message rate must be limited to protect the
+    Rendezvous Point from denial-of-service floods.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^\\s*ip pim sparse-mode"
+  require:
+    - "(?im)^ip pim register-rate-limit \\d+"
+  fix: |
+    ip pim register-rate-limit 5
+
+- id: stig-v-216727-pim-spt-threshold-infinity
+  description: >-
+    STIG V-216727: the SPT threshold must be set to infinity in
+    Any-Source Multicast deployments to prevent uncontrolled (S,G)
+    shortest-path-tree state growth.
+  severity: medium
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^\\s*ip pim sparse-mode"
+  require:
+    - "(?im)^ip pim spt-threshold infinity"
+  fix: |
+    ip pim spt-threshold infinity
+
+- id: stig-v-216729-msdp-authentication
+  description: >-
+    STIG V-216729: MSDP peer sessions must be authenticated to prevent
+    unauthorized source-active advertisements.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^ip msdp peer"
+  require:
+    - "(?im)^ip msdp peer \\S+ password\\b"
+  fix: |
+    ip msdp peer 192.0.2.1 password <strong-key>
+
+# --- IPv6 ---
+
+- id: stig-v-230039-ipv6-ra-hop-limit
+  description: >-
+    STIG V-230039: IPv6 Router Advertisements must use a hop limit of at
+    least 32. Numeric threshold check (not just presence) — matches any
+    configured value of 32 or higher.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  require:
+    - "(?im)^ipv6 hop-limit (3[2-9]|[4-9]\\d|[1-9]\\d{2,})\\b"
+  fix: |
+    ipv6 hop-limit 64
+
+- id: stig-v-230045-ipv6-ra-suppress
+  description: >-
+    STIG V-230045: Router Advertisements must be suppressed on interfaces
+    where they're not needed (e.g. external/untrusted interfaces). Confirms
+    it's used on at least one interface; does not verify every external
+    interface.
+  severity: medium
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  require:
+    - "(?im)^\\s*ipv6 nd ra suppress"
+  fix: |
+    interface GigabitEthernet0/0
+     ipv6 nd ra suppress all
+
+- id: stig-v-230042-no-ipv6-site-local
+  description: >-
+    STIG V-230042: IPv6 Site Local Unicast addresses (deprecated FEC0::/10)
+    must not be configured.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  forbid:
+    - "(?im)^\\s*ipv6 address fec0:"
+  fix: |
+    interface GigabitEthernet0/0
+     no ipv6 address FEC0::1/64
+     ipv6 address 2001:DB8::1/64
+
+- id: stig-v-230048-ipv6-extension-header-filtering
+  description: >-
+    STIG V-230048/230051/230146/230150/230153/230156/230159: the router
+    must drop IPv6 packets with disallowed extension headers/options
+    (undetermined transport, Routing Header, invalid Hop-by-Hop or
+    Destination options, Endpoint Identification, NSAP addressing,
+    undefined extension headers). Consolidated into one check since all
+    seven findings are enforced by the same mechanism — an IPv6 traffic
+    filter ACL applied to the interface. Weak check — confirms an IPv6 ACL
+    is applied; cannot verify it specifically denies each disallowed
+    header/option type.
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^\\s*ipv6 address \\S+"
+  require:
+    - "(?im)^\\s*ipv6 traffic-filter \\S+ in"
+  fix: |
+    ipv6 access-list IPV6_EDGE_IN
+     deny ipv6 any any routing
+     deny ipv6 any any undetermined-transport
+     permit ipv6 any any
+    !
+    interface GigabitEthernet0/0
+     ipv6 traffic-filter IPV6_EDGE_IN in

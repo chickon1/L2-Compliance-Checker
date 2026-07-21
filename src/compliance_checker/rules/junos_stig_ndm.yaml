@@ -1,0 +1,237 @@
+# Juniper Junos rules derived from the DISA "Juniper EX Series Switches
+# Network Device Management" STIG (stigviewer.com, 52 findings, all CAT I).
+# V-IDs are cited in each description.
+#
+# Checked against `show configuration | display set` output (flat "set ..."
+# lines, one config statement per line) rather than the default curly-brace
+# hierarchical format — the collector requests display-set mode specifically
+# so these rules can use the same flat require/forbid regex approach as the
+# Cisco/Arista packs.
+#
+# Findings excluded because they need facts outside static config (RBAC
+# policy content, physical/procedural controls, org-specific authorization
+# lists, or `show`-only operational state) rather than a checkable line:
+# V-253883 (role assignment is a policy judgement, not a single line),
+# V-253889/253892/253893/253894/253896-253898/253918/253919/253921/253933-
+# 253937/253939 (Junos event logging is on by default and covers these by
+# construction once syslog is configured — see the syslog rules below — the
+# individual event-type guarantees aren't independently toggleable config),
+# V-253899/253914/253922/253923/253940 (access-restriction/library-change
+# controls are OS-level file permissions, not user config), V-253901
+# (counting local accounts to confirm exactly one "last resort" account
+# needs enumerating all `system login user` stanzas and classifying which
+# one is the break-glass account — not a fixed string to match),
+# V-253903 (replay-resistant auth = using SSH/TACACS+ at all, already
+# implied by other rules here), V-253916 (RBAC login classes are a policy
+# design, not a presence check), V-253920/253921 (NTP redundancy/timestamp
+# accuracy covered by the NTP rules below), V-253930 (DoS protection is a
+# broad set of platform defaults, not one line), V-253941 (covered by the
+# AAA-server rule below), V-253942 (config backup is an operational
+# practice/cron job, not a device config line), V-253945 (supported OS
+# release requires knowing the current DISA-approved release list, which
+# changes independently of this tool), V-253946 (credential rotation on
+# staff departure is a process, not config).
+- id: junos-stig-v253884-flow-control
+  description: >-
+    V-253884: Junos must enforce approved authorizations for controlling
+    the flow of management information via a firewall filter applied to
+    the loopback/management interface.
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set firewall family inet filter \S+ term \S+ then (accept|discard|reject)'
+  notes: >-
+    Presence of any firewall filter is used as a proxy for "flow control
+    is enforced" — this cannot verify the filter is actually applied to
+    the management interface or that its rules are correct.
+  fix: |
+    set firewall family inet filter PROTECT-RE term allow-mgmt from source-address 192.168.100.0/24
+    set firewall family inet filter PROTECT-RE term allow-mgmt then accept
+    set firewall family inet filter PROTECT-RE term deny-rest then discard
+    set interfaces lo0 unit 0 family inet filter input PROTECT-RE
+
+- id: junos-stig-v253885-lockout
+  description: >-
+    V-253885: Junos must enforce a limit of 3 consecutive invalid logon
+    attempts, with a 15-minute lockout.
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system login retry-options tries-before-disconnect [1-3]$'
+    - '(?im)^set system login retry-options lockout-period (1[5-9]|[2-9]\d|\d{3,})$'
+  fix: |
+    set system login retry-options tries-before-disconnect 3
+    set system login retry-options lockout-period 15
+
+- id: junos-stig-v253886-banner
+  description: "V-253886: Junos must display the DoD Notice and Consent Banner before granting access."
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system login message'
+  fix: |
+    set system login message "You are accessing a U.S. Government (USG) information system (IS) that is provided for USG-authorized use only..."
+
+- id: junos-stig-v253890-253891-syslog-timestamp
+  description: >-
+    V-253890/V-253891: Junos audit records must include date/time and
+    location (host/source) information — satisfied by enabling
+    syslog with the default structured-data/timestamp behavior.
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system syslog file \S+ any (any|notice|info|warning)'
+  fix: |
+    set system syslog file messages any notice
+    set system syslog file messages structured-data
+
+- id: junos-stig-v253900-no-telnet
+  description: "V-253900: Junos must not run the nonsecure telnet or finger services."
+  severity: high
+  platforms: [juniper_junos]
+  forbid:
+    - '(?im)^set system services telnet'
+    - '(?im)^set system services finger'
+  fix: |
+    delete system services telnet
+    delete system services finger
+
+- id: junos-stig-v253904-password-length
+  description: "V-253904: Junos must enforce a minimum 15-character password length."
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system login password minimum-length (1[5-9]|[2-9]\d|\d{3,})$'
+  fix: |
+    set system login password minimum-length 15
+
+- id: junos-stig-v253905-908-password-complexity
+  description: >-
+    V-253905/V-253906/V-253907/V-253908: Junos must require uppercase,
+    lowercase, numeric, and special characters in passwords.
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system login password minimum-upper-cases [1-9]'
+    - '(?im)^set system login password minimum-lower-cases [1-9]'
+    - '(?im)^set system login password minimum-numerics [1-9]'
+    - '(?im)^set system login password minimum-punctuations [1-9]'
+  fix: |
+    set system login password minimum-upper-cases 1
+    set system login password minimum-lower-cases 1
+    set system login password minimum-numerics 1
+    set system login password minimum-punctuations 1
+
+- id: junos-stig-v253909-password-change-count
+  description: "V-253909: Junos must require at least 8 character positions to change when a password is updated."
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system login password minimum-changes [8-9]'
+  fix: |
+    set system login password minimum-changes 8
+
+- id: junos-stig-v253910-password-hash
+  description: "V-253910: Junos must store only cryptographic (hashed) representations of passwords."
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system login password format sha(256|512)'
+  fix: |
+    set system login password format sha512
+
+- id: junos-stig-v253911-253928-253929-fips-remote-access
+  description: >-
+    V-253911/V-253928/V-253929: Junos must use FIPS-validated algorithms
+    for remote maintenance/management session integrity and
+    confidentiality — enforced by restricting SSH to strong
+    key-exchange/cipher/MAC algorithm sets.
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system services ssh protocol-version v2$'
+    - '(?im)^set system services ssh (macs|ciphers|key-exchange) '
+  notes: >-
+    Checks that SSHv2 is enforced and that at least one of macs/ciphers/
+    key-exchange has been explicitly restricted — it does not verify the
+    specific algorithm list matches the current DISA-approved set, since
+    that list changes independently of device config.
+  fix: |
+    set system services ssh protocol-version v2
+    set system services ssh ciphers aes256-ctr
+    set system services ssh macs hmac-sha2-512
+    set system services ssh key-exchange group14-sha256
+
+- id: junos-stig-v253913-idle-timeout
+  description: "V-253913: Junos must terminate idle management sessions after 5 minutes."
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system login idle-timeout [1-5]$'
+  fix: |
+    set system login idle-timeout 5
+
+- id: junos-stig-v253925-snmp-auth
+  description: "V-253925: Junos must authenticate SNMP messages using a FIPS-validated HMAC (SNMPv3)."
+  severity: high
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set snmp'
+  require:
+    - '(?im)^set snmp v3 usm local-engine user \S+ authentication-(sha|sha224|sha256)'
+  forbid:
+    - '(?im)^set snmp community '
+  fix: |
+    delete snmp community
+    set snmp v3 usm local-engine user snmpadmin authentication-sha authentication-password "REPLACE_ME"
+    set snmp v3 usm local-engine user snmpadmin privacy-aes128 privacy-password "REPLACE_ME"
+
+- id: junos-stig-v253926-ntp-auth
+  description: "V-253926: Junos must use an authenticated, trusted NTP source."
+  severity: high
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set system ntp server'
+  require:
+    - '(?im)^set system ntp authentication-key \d+ type '
+    - '(?im)^set system ntp server \S+ key \d+'
+  fix: |
+    set system ntp authentication-key 1 type sha256 value "REPLACE_ME"
+    set system ntp server 192.168.100.1 key 1
+
+- id: junos-stig-v253943-pki-provider
+  description: "V-253943: Junos must obtain its public key certificates from an approved service provider."
+  severity: high
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set security certificates|^set system services web-management https'
+  require:
+    - '(?im)^set security pki ca-profile \S+ ca-identity'
+  notes: >-
+    Presence of a configured CA profile is used as a proxy for "certs come
+    from an approved CA" — this cannot verify which CA was actually used
+    to issue the loaded certificate.
+  fix: |
+    set security pki ca-profile DOD-PKI ca-identity dod-ca.mil
+
+- id: junos-stig-v253944-syslog-two-servers
+  description: "V-253944: Junos must send audit records to at least two central log servers."
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system syslog host \S+ any (any|notice|info|warning)'
+  notes: This checks for at least one syslog host; confirm a second is present in evidence/running-config since two identical-looking lines only differ by IP.
+  fix: |
+    set system syslog host 192.168.100.10 any notice
+    set system syslog host 192.168.100.11 any notice
+
+- id: junos-stig-v253941-aaa-server
+  description: "V-253941: Junos must use a centralized authentication server (TACACS+/RADIUS) for administrative access, rather than only local accounts."
+  severity: high
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set system (tacplus-server|radius-server) '
+    - '(?im)^set system authentication-order '
+  fix: |
+    set system tacplus-server 192.168.100.20 secret "REPLACE_ME"
+    set system authentication-order [ tacplus password ]

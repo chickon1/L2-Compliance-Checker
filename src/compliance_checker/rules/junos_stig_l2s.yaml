@@ -1,0 +1,160 @@
+# Juniper Junos rules derived from the DISA "Juniper EX Series Switches
+# Layer 2 Switch" STIG (stigviewer.com, 24 findings: 2 CAT I, 18 CAT II,
+# 4 CAT III). V-IDs are cited in each description.
+#
+# All syntax below targets `show configuration | display set` output. It is
+# written from Junos EX documentation and has NOT yet been live-verified
+# against Steve's vJunos-switch GNS3 appliance — flag anything that doesn't
+# match once that device is reachable, the same way the Arista pack caught
+# 4 real syntax bugs via live testing.
+#
+# Excluded findings that need topology/operational facts a generic tool
+# can't know from one device's config: V-253948 ("disable non-essential
+# capabilities" is too generic without knowing which capabilities are
+# actually unused on this specific switch); V-253949/V-253954 (802.1X
+# endpoint authentication requires knowing which ports face untrusted
+# endpoints vs. trunks/uplinks); V-253952/V-253953 (lawful-intercept-style
+# session capture/mirroring is an org-specific requirement, not a fixed
+# config line); V-253965 (bidirectional link connectivity verification is
+# operational state, not config); V-253966 (which access ports are
+# currently unused/disabled is topology-specific); V-253967 (which VLANs
+# carry L2 control traffic vs. host traffic is a design decision per site);
+# V-253970 (which ports are "user-facing" vs. uplinks/trunks can't be
+# inferred generically).
+- id: junos-stig-v253950-no-dynamic-vlan-registration
+  description: "V-253950: Junos must not run dynamic VLAN registration protocols (MVRP/GVRP)."
+  severity: medium
+  platforms: [juniper_junos]
+  forbid:
+    - '(?im)^set protocols mvrp'
+    - '(?im)^set protocols gvrp'
+  fix: |
+    delete protocols mvrp
+    delete protocols gvrp
+
+- id: junos-stig-v253955-root-protection
+  description: "V-253955: Junos must enable Root Protection on STP access-layer ports to prevent an unauthorized switch from becoming root."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols (rstp|mstp)'
+  require:
+    - '(?im)^set protocols (rstp|mstp) interface \S+ no-root-port'
+  fix: |
+    set protocols rstp interface ge-0/0/1 no-root-port
+
+- id: junos-stig-v253956-bpdu-protection
+  description: "V-253956: Junos must enable BPDU Protection on user-facing access ports."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols (rstp|mstp)'
+  require:
+    - '(?im)^set protocols (rstp|mstp) bpdu-block-on-edge'
+  fix: |
+    set protocols rstp bpdu-block-on-edge
+
+- id: junos-stig-v253957-loop-protection
+  description: "V-253957: Junos must enable STP Loop Protection on non-designated ports."
+  severity: medium
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set protocols (rstp|mstp)'
+  require:
+    - '(?im)^set protocols (rstp|mstp) interface \S+ loop-protect'
+  notes: Junos loop-protect placement is unverified against a real vJunos-switch config yet — confirm this is the correct stanza once the lab appliance is reachable.
+  fix: |
+    set protocols rstp interface ge-0/0/1 loop-protect
+
+- id: junos-stig-v253959-dhcp-snooping
+  description: "V-253959: Junos must enable DHCP snooping for user VLANs to prevent rogue DHCP servers."
+  severity: medium
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set vlans \S+ forwarding-options dhcp-security'
+  forbid:
+    - '(?im)^set vlans \S+ forwarding-options dhcp-security no-dhcp-snooping'
+  notes: >-
+    Verified live against a vJunos-switch (26.2R1.7) running the modern
+    ELS-style hierarchy — the old "ethernet-switching-options
+    secure-access-port" hierarchy used on legacy Junos EX doesn't exist on
+    this release at all (confirmed via a syntax error live-testing). DHCP
+    snooping is on by default for any VLAN with the dhcp-security stanza
+    present; only an explicit no-dhcp-snooping turns it off.
+  fix: |
+    set vlans v100 forwarding-options dhcp-security
+
+- id: junos-stig-v253960-ip-source-guard
+  description: "V-253960: Junos must enable IP Source Guard on untrusted access VLANs."
+  severity: medium
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set vlans \S+ forwarding-options dhcp-security ip-source-guard'
+  notes: Verified live against a vJunos-switch (26.2R1.7) — corrected from the legacy "ethernet-switching-options secure-access-port" hierarchy, which doesn't exist on this release.
+  fix: |
+    set vlans v100 forwarding-options dhcp-security ip-source-guard
+
+- id: junos-stig-v253961-dynamic-arp-inspection
+  description: "V-253961: Junos must enable Dynamic ARP Inspection on user VLANs."
+  severity: medium
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set vlans \S+ forwarding-options dhcp-security arp-inspection'
+  notes: Verified live against a vJunos-switch (26.2R1.7) — corrected from the legacy "ethernet-switching-options secure-access-port" hierarchy, which doesn't exist on this release.
+  fix: |
+    set vlans v100 forwarding-options dhcp-security arp-inspection
+
+- id: junos-stig-v253951-v253962-storm-control
+  description: "V-253951/V-253962: Junos must limit excess broadcast/multicast/unknown-unicast bandwidth via Storm Control on host-facing interfaces."
+  severity: medium
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set interfaces \S+ unit \d+ family ethernet-switching storm-control'
+  fix: |
+    set forwarding-options storm-control-profiles STORM-PROFILE all bandwidth-percentage 80
+    set interfaces ge-0/0/1 unit 0 family ethernet-switching storm-control STORM-PROFILE
+
+- id: junos-stig-v253963-igmp-mld-snooping
+  description: "V-253963: Junos must not have IGMP/MLD Snooping explicitly disabled on VLANs (it is on by default)."
+  severity: medium
+  platforms: [juniper_junos]
+  forbid:
+    - '(?im)^set protocols igmp-snooping vlan \S+ disable'
+    - '(?im)^set protocols mld-snooping vlan \S+ disable'
+  fix: |
+    delete protocols igmp-snooping vlan v100 disable
+
+- id: junos-stig-v253964-rstp-required
+  description: "V-253964: Junos must run Rapid STP or Multiple STP on VLANs spanning more than one switch."
+  severity: medium
+  platforms: [juniper_junos]
+  require:
+    - '(?im)^set protocols (rstp|mstp)'
+  fix: |
+    set protocols rstp
+
+- id: junos-stig-v253968-v253969-prune-default-vlan
+  description: >-
+    V-253968/V-253969: Junos must not use the default VLAN for management
+    traffic or leave it enabled on trunk links that don't need it.
+  severity: medium
+  platforms: [juniper_junos]
+  forbid:
+    - '(?im)^set interfaces \S+ unit \d+ family ethernet-switching vlan members default$'
+  fix: |
+    delete interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members default
+    set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members v100
+
+- id: junos-stig-v253971-v253972-native-vlan
+  description: >-
+    V-253971/V-253972: Junos trunk ports must use an explicit,
+    non-default native VLAN, and access ports must not be assigned to
+    that native VLAN.
+  severity: low
+  platforms: [juniper_junos]
+  applies_if:
+    - '(?im)^set interfaces \S+ unit \d+ family ethernet-switching interface-mode trunk'
+  require:
+    - '(?im)^set interfaces \S+ native-vlan-id \d+'
+  fix: |
+    set interfaces ge-0/0/1 native-vlan-id 999

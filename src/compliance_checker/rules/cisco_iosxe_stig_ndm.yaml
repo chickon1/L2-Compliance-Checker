@@ -1,0 +1,445 @@
+# Cisco IOS-XE rules derived from the DISA "Cisco IOS XE Switch NDM" (Network
+# Device Management) STIG. V-IDs are cited in each description so findings
+# can be traced back to the source requirement.
+#
+# The rule engine only does flat require/forbid regex matching against the
+# full running-config text — it has no per-interface/per-section context and
+# cannot see `show version` or operational state (only `show running-config`
+# is collected). Findings that need those are intentionally omitted rather
+# than approximated into a misleading check:
+#   V-220569 (run a currently-supported IOS release) — needs `show version`
+#     against a live EOL list, not config text.
+#   V-220529 (audit records include location info) — location is an
+#     organizational/physical fact, not a config line.
+#   V-220547 (audit storage capacity is "appropriate") — sizing judgment,
+#     not a fixed value to check for.
+#   V-220566 (config backup on change) — an operational/process control, not
+#     something visible in the running-config itself.
+#   V-220567 (certs from an approved provider) — which CA issued a cert
+#     isn't in running-config text.
+# V-220519 through V-220522 and V-220545/V-220559 (audit account
+# create/modify/disable/remove/enable, and privilege-change logging) are
+# consolidated into one command-accounting check (stig-v-220519-command-accounting)
+# since on IOS-XE all of those actions are admin commands captured the same
+# way, by `aaa accounting commands`.
+
+- id: stig-v-220534-unnecessary-services
+  description: >-
+    STIG V-220534: unnecessary and nonsecure services must be disabled
+    (finger, tcp/udp small-servers, PAD, config service, BOOTP server, DNS
+    server, ident, rcmd, Call Home).
+  severity: medium
+  platforms: [cisco_ios]
+  forbid:
+    - "(?im)^ip http server\\b"
+    - "(?im)^ip bootp server\\b"
+    - "(?im)^ip finger\\b"
+    - "(?im)^service finger\\b"
+    - "(?im)^service pad\\b"
+    - "(?im)^service tcp-small-servers\\b"
+    - "(?im)^service udp-small-servers\\b"
+    - "(?im)^service config\\b"
+    - "(?im)^ip identd\\b"
+    - "(?im)^ip dns server\\b"
+    - "(?im)^ip rcmd (rcp|rsh)-enable\\b"
+  fix: |
+    no ip http server
+    no ip http secure-server
+    no ip bootp server
+    no ip finger
+    no service finger
+    no service pad
+    no service tcp-small-servers
+    no service udp-small-servers
+    no service config
+    no ip identd
+    no ip dns server
+    no ip rcmd rcp-enable
+    no ip rcmd rsh-enable
+    no service call-home
+
+- id: stig-v-220543-encrypted-passwords-only
+  description: >-
+    STIG V-220543: only cryptographic (hashed) representations of passwords
+    may be stored — enable secret and username ... secret, not the
+    reversible enable/username password forms.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^enable secret"
+  forbid:
+    - "(?im)^enable password"
+    - "(?im)^username \\S+ password"
+  fix: |
+    enable secret <strong-passphrase>
+    username admin secret <strong-passphrase>
+    no enable password
+    service password-encryption
+
+- id: stig-v-220544-idle-timeout
+  description: >-
+    STIG V-220544: management sessions (console, VTY) must terminate after
+    5 minutes of inactivity. Confirms a 5-minute exec-timeout appears
+    somewhere in the config; does not confirm it's set on every line.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*exec-timeout 5 0\\b"
+  fix: |
+    line con 0
+     exec-timeout 5 0
+    line vty 0 15
+     exec-timeout 5 0
+
+- id: stig-v-220555-ssh-fips-mac
+  description: >-
+    STIG V-220555: SSH must use a FIPS-validated HMAC (SHA-2) for remote
+    maintenance session integrity, not SHA-1 or MD5.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^ip ssh server algorithm mac\\b.*hmac-sha2"
+  fix: |
+    ip ssh server algorithm mac hmac-sha2-256 hmac-sha2-512
+
+- id: stig-v-220556-ssh-fips-encryption
+  description: >-
+    STIG V-220556: SSH must use FIPS 140-2 approved AES-CTR ciphers for
+    remote maintenance session confidentiality.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^ip ssh server algorithm encryption\\b.*aes\\d+-ctr"
+    - "(?im)^ip ssh version 2\\b"
+  fix: |
+    ip ssh version 2
+    ip ssh server algorithm encryption aes256-ctr aes192-ctr aes128-ctr
+
+- id: stig-v-220565-two-auth-servers
+  description: >-
+    STIG V-220565: at least two authentication servers must be configured
+    for administrator authentication redundancy. Weak check — confirms an
+    AAA server group with at least one member exists; cannot count distinct
+    servers from flat regex.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^aaa group server (tacacs\\+|radius) \\S+"
+    - "(?im)^\\s*server(-private)? \\S+"
+  fix: |
+    aaa group server tacacs+ ISE
+     server-private 192.0.2.10 key <key>
+     server-private 192.0.2.11 key <key>
+
+- id: stig-v-220568-central-syslog
+  description: >-
+    STIG V-220568: logs must be forwarded to at least two central log
+    servers. Weak check — confirms at least one `logging host` line; cannot
+    count distinct servers from flat regex.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^logging host \\S+"
+  fix: |
+    logging host 192.0.2.20
+    logging host 192.0.2.21
+
+- id: stig-v-220518-session-limit
+  description: >-
+    STIG V-220518: concurrent management sessions must be limited to an
+    organization-defined number.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*session-limit \\d+"
+  fix: |
+    line vty 0 15
+     session-limit 4
+
+- id: stig-v-220519-command-accounting
+  description: >-
+    STIG V-220519/220520/220521/220522/220545/220559: account creation,
+    modification, enabling, disabling, and removal must all be audited.
+    Consolidated into one check for `aaa accounting commands`, which
+    captures every admin action (including account management) taken at the
+    privileged EXEC level.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^aaa accounting commands 15 default start-stop group"
+  fix: |
+    aaa accounting commands 15 default start-stop group tacacs+
+
+- id: stig-v-220523-management-acl
+  description: >-
+    STIG V-220523: management information flow must be restricted by an
+    inbound ACL limiting which hosts may reach management interfaces/VTYs.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*access-class \\S+ in\\b"
+  fix: |
+    ip access-list standard MGMT_HOSTS
+     permit 192.0.2.0 0.0.0.255
+    !
+    line vty 0 15
+     access-class MGMT_HOSTS in
+
+- id: stig-v-220524-account-lockout
+  description: >-
+    STIG V-220524: accounts must be locked out for 15 minutes after 3
+    consecutive failed logon attempts.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^login block-for 900 attempts 3\\b"
+  fix: |
+    login block-for 900 attempts 3 within 120
+
+- id: stig-v-220525-login-banner
+  description: >-
+    STIG V-220525: a DoD-approved login banner must be presented before
+    authentication.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^banner login"
+  fix: |
+    banner login ^
+    Authorized access only.
+    ^
+
+- id: stig-v-220526-privileged-command-logging
+  description: >-
+    STIG V-220526/220530: full-text logging of privileged (config-mode)
+    commands must be enabled so every administrator action is recorded.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^archive"
+    - "(?im)^\\s*log config"
+    - "(?im)^\\s*logging enable"
+  fix: |
+    archive
+     log config
+      logging enable
+      logging size 1000
+      notify syslog
+
+- id: stig-v-220528-audit-timestamps
+  description: >-
+    STIG V-220528: audit records must include a date/time stamp.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^service timestamps log datetime"
+  fix: |
+    service timestamps log datetime msec localtime show-timezone
+    service timestamps debug datetime msec localtime show-timezone
+
+- id: stig-v-220531-persistent-logging
+  description: >-
+    STIG V-220531/220532: audit/log information must be protected from
+    unauthorized modification and deletion. Weak check — confirms logs are
+    written to persistent local storage (harder to silently wipe than a
+    volatile buffer only); does not verify filesystem-level ACLs.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^logging persistent"
+  fix: |
+    logging persistent url flash:/logs size 1010000 filesize 100000
+
+- id: stig-v-220533-privilege-limits
+  description: >-
+    STIG V-220533: privileges to change device software/config must be
+    limited — the default privilege 15 for enable-level access must not be
+    handed out via a shared/generic account; role-based privilege levels
+    should be used for non-full-admin users.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^aaa authorization exec default group"
+  fix: |
+    aaa authorization exec default group tacacs+ local
+    aaa authorization commands 15 default group tacacs+ local
+
+- id: stig-v-220535-single-local-account
+  description: >-
+    STIG V-220535: only one local account may exist, reserved as the
+    account of last resort for when the centralized AAA servers are
+    unreachable. Config-text can't determine account *purpose*, only count
+    them — flags devices with more than one local `username` line for
+    manual review.
+  severity: medium
+  platforms: [cisco_ios]
+  notes: >-
+    The rule engine can't count occurrences of a pattern, only detect
+    presence. This checks that AAA login falls back to `local` (i.e., a
+    local account of last resort exists) — it cannot verify only one exists.
+    Manually confirm there's exactly one local admin account.
+  require:
+    - "(?im)^aaa authentication login default group \\S+ local"
+  fix: |
+    aaa authentication login default group tacacs+ local
+    ! Then manually remove any extra local accounts beyond the one of last resort.
+
+- id: stig-v-220537-password-min-length
+  description: >-
+    STIG V-220537: passwords must be at least 15 characters.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*password-policy min-length 15\\b"
+  fix: |
+    aaa common-criteria policy STIG_POLICY
+     min-length 15
+     upper-case 1
+     lower-case 1
+     numeric-count 1
+     special-case 1
+     char-changes 8
+
+- id: stig-v-220538-password-uppercase
+  description: >-
+    STIG V-220538: passwords must require at least one uppercase character.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*upper-case \\d+"
+  fix: |
+    aaa common-criteria policy STIG_POLICY
+     upper-case 1
+
+- id: stig-v-220539-password-lowercase
+  description: >-
+    STIG V-220539: passwords must require at least one lowercase character.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*lower-case \\d+"
+  fix: |
+    aaa common-criteria policy STIG_POLICY
+     lower-case 1
+
+- id: stig-v-220540-password-numeric
+  description: >-
+    STIG V-220540: passwords must require at least one numeric character.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*numeric-count \\d+"
+  fix: |
+    aaa common-criteria policy STIG_POLICY
+     numeric-count 1
+
+- id: stig-v-220541-password-special
+  description: >-
+    STIG V-220541: passwords must require at least one special character.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*special-case \\d+"
+  fix: |
+    aaa common-criteria policy STIG_POLICY
+     special-case 1
+
+- id: stig-v-220542-password-char-changes
+  description: >-
+    STIG V-220542: at least 8 characters must change between old and new
+    passwords when updating.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^\\s*char-changes 8\\b"
+  fix: |
+    aaa common-criteria policy STIG_POLICY
+     char-changes 8
+
+- id: stig-v-220548-logging-trap-alerts
+  description: >-
+    STIG V-220548: the device must generate alerts for audit-failure events
+    (e.g. logging host unreachable, log storage full) by sending logs at an
+    adequate severity level to the central log server.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^logging trap (informational|debugging|notifications|warnings)\\b"
+  fix: |
+    logging trap informational
+
+- id: stig-v-220549-ntp-redundant-sources
+  description: >-
+    STIG V-220549: the clock must be synchronized with redundant
+    authoritative time sources. Weak check — confirms at least one NTP
+    server; cannot count distinct servers from flat regex.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^ntp server \\S+"
+  fix: |
+    ntp server 192.0.2.30
+    ntp server 192.0.2.31
+
+- id: stig-v-220552-snmp-fips-auth
+  description: >-
+    STIG V-220552: SNMP messages must be authenticated using a FIPS-validated
+    HMAC (SNMPv3 auth SHA).
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^snmp-server (user|group) \\S+.*\\bauth sha\\b"
+  fix: |
+    snmp-server group STIG_GROUP v3 priv
+    snmp-server user snmpadmin STIG_GROUP v3 auth sha <authpass> priv aes 128 <privpass>
+
+- id: stig-v-220553-snmp-fips-privacy
+  description: >-
+    STIG V-220553: SNMP messages must be encrypted with a FIPS 140-2
+    approved algorithm (SNMPv3 priv AES).
+  severity: high
+  platforms: [cisco_ios]
+  applies_if:
+    - "(?im)^snmp-server"
+  require:
+    - "(?im)^snmp-server (user|group) \\S+.*\\bpriv aes\\b"
+  fix: |
+    snmp-server user snmpadmin STIG_GROUP v3 auth sha <authpass> priv aes 128 <privpass>
+
+- id: stig-v-220554-ntp-authenticated
+  description: >-
+    STIG V-220554: NTP time sources must be cryptographically authenticated.
+  severity: high
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^ntp authenticate$"
+    - "(?im)^ntp trusted-key \\d+"
+    - "(?im)^ntp server \\S+.*\\bkey \\d+"
+  fix: |
+    ntp authentication-key 1 sha1 <key>
+    ntp trusted-key 1
+    ntp authenticate
+    ntp server 192.0.2.30 key 1
+
+- id: stig-v-220560-logon-attempt-logging
+  description: >-
+    STIG V-220560: successful and unsuccessful logon attempts must be
+    audited.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^login on-success log"
+    - "(?im)^login on-failure log"
+  fix: |
+    login on-success log
+    login on-failure log
+
+- id: stig-v-220561-privileged-activity-logging
+  description: >-
+    STIG V-220561: privileged (EXEC-level) activity must be logged.
+  severity: medium
+  platforms: [cisco_ios]
+  require:
+    - "(?im)^aaa accounting exec default start-stop group"
+  fix: |
+    aaa accounting exec default start-stop group tacacs+
