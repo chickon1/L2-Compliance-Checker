@@ -1,10 +1,20 @@
 name: Release
 
-# Builds a Windows installer and a Linux binary and (only for an actual
+# Builds a signed Windows MSI and a Linux binary and (only for an actual
 # version tag) publishes them as a GitHub Release. PyInstaller can't
 # cross-compile, so each build runs on its own OS via GitHub's own hosted
 # runners rather than needing a real Windows machine on hand — see
 # packaging/README.md for the equivalent manual steps.
+#
+# The Windows job also submits the exe and the final .msi to SignPath
+# Foundation (free code signing for qualifying open-source projects) for a
+# real Authenticode signature, so installs don't show an "Unknown
+# Publisher" warning. This step needs SIGNPATH_API_TOKEN (secret) and
+# SIGNPATH_ORGANIZATION_ID (variable) configured on the repo — see
+# packaging/README.md for the one-time SignPath dashboard setup. Until
+# those exist, this job will fail at the signing steps; everything before
+# that (frontend build, PyInstaller, WiX packaging) still works and can be
+# verified independently.
 on:
   push:
     tags:
@@ -15,9 +25,9 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -29,7 +39,7 @@ jobs:
           npm ci
           npm run build
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -39,23 +49,59 @@ jobs:
       - name: Build the .exe
         run: pyinstaller packaging/compliance-checker.spec
 
-      - name: Install Inno Setup
-        run: choco install innosetup -y
+      - name: Upload unsigned exe for signing
+        uses: actions/upload-artifact@v7
+        id: upload-unsigned-exe
+        with:
+          name: unsigned-exe
+          path: dist/compliance-checker.exe
 
-      - name: Build the installer
-        run: iscc packaging/compliance-checker.iss
+      - name: Sign the exe
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
+          organization-id: "${{ vars.SIGNPATH_ORGANIZATION_ID }}"
+          project-slug: "compliance-checker"
+          signing-policy-slug: ${{ startsWith(github.ref, 'refs/tags/') && 'release-signing' || 'test-signing' }}
+          github-artifact-id: "${{ steps.upload-unsigned-exe.outputs.artifact-id }}"
+          wait-for-completion: true
+          output-artifact-directory: signed-exe
 
-      - uses: actions/upload-artifact@v4
+      - name: Install WiX
+        run: dotnet tool install --global wix --version 6.0.2
+
+      - name: Build the .msi
+        run: wix build packaging/compliance-checker.wxs -d SignedExeSource=signed-exe/compliance-checker.exe -out ComplianceChecker.msi
+
+      - name: Upload unsigned msi for signing
+        uses: actions/upload-artifact@v7
+        id: upload-unsigned-msi
+        with:
+          name: unsigned-msi
+          path: ComplianceChecker.msi
+
+      - name: Sign the msi
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
+          organization-id: "${{ vars.SIGNPATH_ORGANIZATION_ID }}"
+          project-slug: "compliance-checker"
+          signing-policy-slug: ${{ startsWith(github.ref, 'refs/tags/') && 'release-signing' || 'test-signing' }}
+          github-artifact-id: "${{ steps.upload-unsigned-msi.outputs.artifact-id }}"
+          wait-for-completion: true
+          output-artifact-directory: signed-msi
+
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-installer
-          path: packaging/installer_output/ComplianceChecker-Setup.exe
+          path: signed-msi/ComplianceChecker.msi
 
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -67,7 +113,7 @@ jobs:
           npm ci
           npm run build
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -80,7 +126,7 @@ jobs:
       - name: Package as tarball
         run: tar -C dist -czf compliance-checker-linux-x86_64.tar.gz compliance-checker
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-binary
           path: compliance-checker-linux-x86_64.tar.gz
@@ -92,12 +138,12 @@ jobs:
     permissions:
       contents: write # needed to create the Release and attach files with the default GITHUB_TOKEN
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows-installer
           path: artifacts
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-binary
           path: artifacts
@@ -106,5 +152,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/ComplianceChecker-Setup.exe
+            artifacts/ComplianceChecker.msi
             artifacts/compliance-checker-linux-x86_64.tar.gz
