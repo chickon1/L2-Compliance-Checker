@@ -1,49 +1,47 @@
-# Building the standalone Windows app and Linux build
+# Building the standalone Linux build (and the Windows app by hand)
 
 This turns the compliance-checker web app into a single executable that runs
 entirely on your own machine.
 
-- **Windows**: installs from a signed `ComplianceChecker.msi`; the app opens
-  in its own native window (pywebview) — no browser tab, no separate server
-  process to remember to start.
 - **Linux**: `compliance-checker` runs the server and opens it in your normal
   browser (`http://127.0.0.1:8444`) — same experience as running the app
   in dev, just as one binary instead of a venv + `npm run build` + `uvicorn`.
+  This is the one built and published via CI.
+- **Windows**: `compliance-checker.exe` opens in its own native window
+  (pywebview) — no browser tab, no separate server process to remember to
+  start. Not currently built/published via CI (see note below) — build it by
+  hand if you want to try it.
 
-## Recommended: let GitHub Actions build both
+## Recommended: let GitHub Actions build the Linux binary
 
-`.github/workflows/release.yml` builds the Windows installer and the Linux
-binary on GitHub's own hosted runners — a Windows box for the `.msi`, a Linux
-box for the other — and, when the trigger is a real version tag, publishes
-both as a GitHub Release automatically. This is the easiest path since it
-needs no Windows machine and no manual zip-and-copy step:
+`.github/workflows/release.yml` builds the Linux binary on GitHub's own
+hosted runner and, when the trigger is a real version tag, publishes it as a
+GitHub Release automatically:
 
 1. Push a version tag: `git tag v0.1.0 && git push origin v0.1.0`.
-2. Watch the **Actions** tab on GitHub — `build-windows` and `build-linux` run
-   in parallel, then `release` attaches both files to a new Release for that
-   tag.
-3. You (or anyone) downloads `ComplianceChecker.msi` or
-   `compliance-checker-linux-x86_64.tar.gz` straight from the Release page.
-
-The Windows job also submits the exe and the finished `.msi` to **SignPath
-Foundation** for a real Authenticode signature — see "Code signing via
-SignPath Foundation" below for the one-time setup this depends on. Until
-that's configured, `build-windows` will get all the way through building the
-`.msi` and then fail at the signing step, which is expected and still
-confirms the rest of the pipeline works.
+2. Watch the **Actions** tab on GitHub — `build-linux` runs, then `release`
+   attaches the tarball to a new Release for that tag.
+3. You (or anyone) downloads `compliance-checker-linux-x86_64.tar.gz`
+   straight from the Release page.
 
 You can also trigger the workflow manually (Actions tab → Release → **Run
-workflow**) without a tag — that builds both artifacts as a smoke test but
+workflow**) without a tag — that builds the artifact as a smoke test but
 does **not** publish a Release, so it's safe to use to check the pipeline
 still works before cutting a real version.
 
-The rest of this file covers building either one by hand, useful for testing
-a change before tagging a release.
+**About Windows**: a CI-built, signed `.msi` (via WiX Toolset + SignPath
+Foundation) was set up and worked right up to the signing step, which needs
+a completed SignPath Foundation application (free for open-source projects,
+but a human-reviewed process, not instant). That got shelved for now to keep
+things simple — see the "Switch Windows packaging to a signed MSI" commit in
+git history if picking it back up later. In the meantime, the Windows app
+still exists and can be built by hand (below); it just won't be signed or
+published automatically.
 
 ## Building the Linux binary locally
 
-Unlike Windows, this can be done directly on this VM (or any Linux box) since
-PyInstaller doesn't need to cross-compile Linux-on-Linux:
+This can be done directly on this VM (or any Linux box) since PyInstaller
+doesn't need to cross-compile Linux-on-Linux:
 
 ```
 cd frontend && npm install && npm run build && cd ..
@@ -53,8 +51,7 @@ python3.12 -m venv .venv && .venv/bin/pip install -e ".[desktop]"
 
 The finished binary lands at `dist/compliance-checker` — run it directly
 (`chmod +x` first if needed) and it prints the URL and opens your browser to
-it. This is the same `.spec` file used for Windows; which OS it targets
-depends only on which OS runs `pyinstaller`.
+it.
 
 ## Building the Windows app by hand
 
@@ -99,63 +96,12 @@ That installs the app itself plus `pywebview` and `pyinstaller`.
 pyinstaller packaging\compliance-checker.spec
 ```
 
-The finished executable lands at `dist\compliance-checker.exe`. You *can*
-stop here and just run that file directly — but it won't show up in
-Settings > Apps, won't have Start Menu shortcuts, and won't have a proper
-uninstaller. For that, do step 5.
-
-### 5. Build the .msi (adds Start Menu shortcut + uninstall support)
-
-Install the [WiX Toolset](https://docs.firegiant.com/wix/) as a .NET tool
-(needs the .NET SDK):
-
-```
-dotnet tool install --global wix --version 6.0.2
-wix build packaging\compliance-checker.wxs -d SignedExeSource=dist\compliance-checker.exe -out ComplianceChecker.msi
-```
-
-(`SignedExeSource` just means "the exe to package" — building by hand like
-this packages the *unsigned* exe from step 4, since only the CI pipeline has
-access to the SignPath signing credentials. That's fine for testing an
-install locally; it'll still show the same "Unknown Publisher" prompt an
-unsigned build always does.)
-
-This produces `ComplianceChecker.msi`. That installer:
-
-- Installs to `%LOCALAPPDATA%\ComplianceChecker` — no admin rights or UAC
-  prompt needed (`Scope="perUser"` in the `.wxs`)
-- Adds a Start Menu shortcut
-- Registers a normal uninstall entry under **Settings > Apps** (or Control
-  Panel > Programs and Features) — no manual file cleanup needed later
-- Leaves `%APPDATA%\ComplianceChecker\` (the database + credential
-  encryption key) in place on uninstall, matching how most Windows apps
-  handle user data — delete that folder by hand if you ever want a
-  completely clean wipe
-
-## Code signing via SignPath Foundation
-
-The CI pipeline signs both the exe and the `.msi` using
-[SignPath Foundation](https://signpath.org/), which signs qualifying
-open-source projects for free (this repo qualifies: public, MIT-licensed, no
-proprietary code). This is a one-time setup, done once by whoever maintains
-the GitHub repo — not needed just to build locally:
-
-1. Apply at signpath.org with this repo's URL and license info. Approval is
-   a human-reviewed process, not instant (expect anywhere from days to a
-   couple of weeks).
-2. Once approved, in the SignPath dashboard: create a Project for this repo,
-   a `release-signing` policy (used for real version-tag builds) and a
-   `test-signing` policy (used for manual `workflow_dispatch` smoke-test
-   runs), and register this GitHub repo as a Trusted Build System.
-3. Generate a submitter-scoped API token, then in this GitHub repo go to
-   **Settings → Secrets and variables → Actions** and add:
-   - Secret `SIGNPATH_API_TOKEN` — the token from step 3
-   - Variable `SIGNPATH_ORGANIZATION_ID` — your SignPath organization ID
-
-Until this is done, `build-windows` still runs and still produces a real
-(unsigned) `.msi` as a build artifact — it just fails at the two "Sign the
-exe"/"Sign the msi" steps, which is the expected state for a repo that
-hasn't completed SignPath onboarding yet.
+The finished executable lands at `dist\compliance-checker.exe` — run it
+directly. There's currently no installer step (that was the WiX/SignPath
+piece that got shelved — see above); this is just the standalone exe, so it
+won't show up in Settings > Apps or have Start Menu shortcuts, and Windows
+will flag it as an unsigned/unknown-publisher executable the first time it
+runs (expected for any unsigned build, not a sign of a problem).
 
 ## What happens on first run
 
@@ -202,14 +148,11 @@ hasn't completed SignPath onboarding yet.
   launcher already waits 1.5s before opening the window
   (`src/compliance_checker/desktop.py`); if it's still blank, try increasing
   that delay slightly and rebuilding.
-- **Antivirus/SmartScreen flags the install**: if you built it by hand
-  locally (unsigned, per step 5 above), this is expected — PyInstaller
-  binaries often get flagged since they're unfamiliar to reputation-based
-  scanners, not because of anything in this codebase. The CI-built,
-  SignPath-signed `.msi` shouldn't show the "Unknown Publisher" version of
-  this warning, though SmartScreen's separate download-reputation prompt can
-  still appear for a while on a brand new release until enough people have
-  run it.
+- **Antivirus/SmartScreen flags the .exe**: expected for an unsigned,
+  freshly-built executable — PyInstaller binaries often get flagged since
+  they're unfamiliar to reputation-based scanners, not because of anything
+  in this codebase. Code-signing would fix this longer-term (see the WiX/
+  SignPath note above) but isn't currently set up.
 - **Linux: `keyring.errors.NoKeyringError` (or similar) on launch**: no
   Secret Service provider is running. The pre-flight check should already
   have offered to install `gnome-keyring` before this error ever shows up
@@ -220,16 +163,13 @@ hasn't completed SignPath onboarding yet.
   isn't always enough on a headless/SSH session specifically — it typically
   needs an actual graphical login to unlock. This is the one part of the
   Linux build that can't be fully verified from this VM (no desktop keyring
-  session here) — same caveat as the untested Windows build below, just for
-  the other platform.
+  session here).
 
-Both `build-windows` and `build-linux` have completed successfully in CI
-(GitHub's hosted runners), and the Linux binary has been smoke-tested
-directly on this VM — but the WiX-built `.msi` and the SignPath signing
-steps specifically are still new and haven't been exercised end-to-end yet
-(signing needs the SignPath onboarding above to be finished first). Treat
-the first real install attempt as a shakeout run, and paste back whatever
-error comes up if it doesn't install/launch cleanly on the first try.
+`build-linux` has completed successfully in CI (GitHub's hosted runner), and
+the binary has also been smoke-tested directly on this VM. The Windows exe
+hasn't been run on a real Windows machine at all yet — treat the first
+attempt as a shakeout run, and paste back whatever error comes up if it
+doesn't launch cleanly on the first try.
 
 ## Hardening notes
 
@@ -257,9 +197,7 @@ non-goal:
   service, that's treated as acceptable for now; say the word if you want
   a PIN/password gate added, it'd be a real (if fairly small) feature
   addition, not a config flip.
-- **Code signing**: CI-built releases are signed via SignPath Foundation (see
-  "Code signing via SignPath Foundation" above) — both the exe and the
-  `.msi`. Builds you produce by hand locally are unsigned, and will get the
-  same SmartScreen/antivirus flagging any unsigned binary does (see the
-  SmartScreen note above); that's expected for a local test build, not a
-  sign of anything wrong.
+- **Unsigned executable**: no code-signing certificate is set up currently
+  (see the WiX/SignPath note above), so Windows SmartScreen/antivirus will
+  likely flag a fresh build the first time it runs. This is normal for
+  unsigned binaries and isn't indicative of anything wrong with the build.

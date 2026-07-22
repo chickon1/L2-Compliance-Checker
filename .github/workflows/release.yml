@@ -1,101 +1,19 @@
 name: Release
 
-# Builds a signed Windows MSI and a Linux binary and (only for an actual
-# version tag) publishes them as a GitHub Release. PyInstaller can't
-# cross-compile, so each build runs on its own OS via GitHub's own hosted
-# runners rather than needing a real Windows machine on hand — see
-# packaging/README.md for the equivalent manual steps.
-#
-# The Windows job also submits the exe and the final .msi to SignPath
-# Foundation (free code signing for qualifying open-source projects) for a
-# real Authenticode signature, so installs don't show an "Unknown
-# Publisher" warning. This step needs SIGNPATH_API_TOKEN (secret) and
-# SIGNPATH_ORGANIZATION_ID (variable) configured on the repo — see
-# packaging/README.md for the one-time SignPath dashboard setup. Until
-# those exist, this job will fail at the signing steps; everything before
-# that (frontend build, PyInstaller, WiX packaging) still works and can be
-# verified independently.
+# Builds the Linux binary and (only for an actual version tag) publishes it
+# as a GitHub Release. Windows packaging (WiX-built .msi, SignPath signing)
+# was tried and works up to the point of needing a completed SignPath
+# Foundation application — see git history around the "Switch Windows
+# packaging to a signed MSI" commit if picking that back up later. For now
+# this only builds/ships Linux; see packaging/README.md for building the
+# Windows desktop app by hand in the meantime.
 on:
   push:
     tags:
       - "v*.*.*"
-  workflow_dispatch: {} # manual smoke-test run: builds both artifacts, does NOT publish a Release
+  workflow_dispatch: {} # manual smoke-test run: builds the artifact, does NOT publish a Release
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install desktop dependencies
-        run: pip install -e ".[desktop]"
-
-      - name: Build the .exe
-        run: pyinstaller packaging/compliance-checker.spec
-
-      - name: Upload unsigned exe for signing
-        uses: actions/upload-artifact@v7
-        id: upload-unsigned-exe
-        with:
-          name: unsigned-exe
-          path: dist/compliance-checker.exe
-
-      - name: Sign the exe
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
-          organization-id: "${{ vars.SIGNPATH_ORGANIZATION_ID }}"
-          project-slug: "compliance-checker"
-          signing-policy-slug: ${{ startsWith(github.ref, 'refs/tags/') && 'release-signing' || 'test-signing' }}
-          github-artifact-id: "${{ steps.upload-unsigned-exe.outputs.artifact-id }}"
-          wait-for-completion: true
-          output-artifact-directory: signed-exe
-
-      - name: Install WiX
-        run: dotnet tool install --global wix --version 6.0.2
-
-      - name: Build the .msi
-        run: wix build packaging/compliance-checker.wxs -d SignedExeSource=signed-exe/compliance-checker.exe -out ComplianceChecker.msi
-
-      - name: Upload unsigned msi for signing
-        uses: actions/upload-artifact@v7
-        id: upload-unsigned-msi
-        with:
-          name: unsigned-msi
-          path: ComplianceChecker.msi
-
-      - name: Sign the msi
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
-          organization-id: "${{ vars.SIGNPATH_ORGANIZATION_ID }}"
-          project-slug: "compliance-checker"
-          signing-policy-slug: ${{ startsWith(github.ref, 'refs/tags/') && 'release-signing' || 'test-signing' }}
-          github-artifact-id: "${{ steps.upload-unsigned-msi.outputs.artifact-id }}"
-          wait-for-completion: true
-          output-artifact-directory: signed-msi
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows-installer
-          path: signed-msi/ComplianceChecker.msi
-
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -132,17 +50,12 @@ jobs:
           path: compliance-checker-linux-x86_64.tar.gz
 
   release:
-    needs: [build-windows, build-linux]
+    needs: [build-linux]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write # needed to create the Release and attach files with the default GITHUB_TOKEN
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: windows-installer
-          path: artifacts
-
       - uses: actions/download-artifact@v8
         with:
           name: linux-binary
@@ -152,5 +65,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/ComplianceChecker.msi
             artifacts/compliance-checker-linux-x86_64.tar.gz
