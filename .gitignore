@@ -19,6 +19,8 @@ frontend/.vite/
 /build/
 /dist/
 packaging/installer_output/
+*.rpm
 
 # Editor
 .vscode/
+.claude/

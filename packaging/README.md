@@ -20,9 +20,14 @@ GitHub Release automatically:
 
 1. Push a version tag: `git tag v0.1.0 && git push origin v0.1.0`.
 2. Watch the **Actions** tab on GitHub — `build-linux` runs, then `release`
-   attaches the tarball to a new Release for that tag.
-3. You (or anyone) downloads `compliance-checker-linux-x86_64.tar.gz`
-   straight from the Release page.
+   attaches two files to a new Release for that tag.
+3. You (or anyone) downloads either straight from the Release page:
+   - `compliance-checker-linux-x86_64.tar.gz` — the raw binary, works on any
+     Linux distro, no package manager involved (untar, `chmod +x`, run).
+   - `compliance-checker-linux-x86_64.rpm` — for RPM-based distros (Rocky,
+     Fedora, RHEL — i.e. this VM). Installs to `/usr/bin/compliance-checker`,
+     shows up in `dnf list installed`, and uninstalls cleanly with
+     `sudo dnf remove compliance-checker`.
 
 You can also trigger the workflow manually (Actions tab → Release → **Run
 workflow**) without a tag — that builds the artifact as a smoke test but
@@ -52,6 +57,32 @@ python3.12 -m venv .venv && .venv/bin/pip install -e ".[desktop]"
 The finished binary lands at `dist/compliance-checker` — run it directly
 (`chmod +x` first if needed) and it prints the URL and opens your browser to
 it.
+
+### Wrapping it as an .rpm
+
+Optional — only needed if you want a real installable package (`dnf install`,
+shows up in `dnf list installed`, clean `dnf remove` uninstall) instead of
+just running the raw binary. Uses [fpm](https://fpm.readthedocs.io/), which
+avoids hand-writing an RPM `.spec` file:
+
+```
+sudo dnf install -y rpm-build ruby
+sudo gem install --no-document fpm
+fpm -s dir -t rpm \
+  --name compliance-checker \
+  --version 0.1.0 \
+  --license MIT \
+  --architecture x86_64 \
+  --description "Network gear STIG compliance checker" \
+  --url "https://github.com/chickon1/L2-Compliance-Checker" \
+  --package compliance-checker-linux-x86_64.rpm \
+  dist/compliance-checker=/usr/bin/compliance-checker
+```
+
+That produces `compliance-checker-linux-x86_64.rpm`, installing the binary
+to `/usr/bin/compliance-checker`. The CI pipeline does the same thing (on
+Ubuntu, where the equivalent package is `rpm` rather than `rpm-build`) and
+attaches the result to each GitHub Release.
 
 ## Building the Windows app by hand
 

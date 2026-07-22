@@ -49,6 +49,38 @@ jobs:
           name: linux-binary
           path: compliance-checker-linux-x86_64.tar.gz
 
+      - name: Determine package version
+        id: pkgver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install rpm packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          gem install --no-document fpm
+
+      - name: Package as rpm
+        run: |
+          fpm -s dir -t rpm \
+            --name compliance-checker \
+            --version "${{ steps.pkgver.outputs.version }}" \
+            --license MIT \
+            --architecture x86_64 \
+            --description "Network gear STIG compliance checker" \
+            --url "https://github.com/chickon1/L2-Compliance-Checker" \
+            --package compliance-checker-linux-x86_64.rpm \
+            dist/compliance-checker=/usr/bin/compliance-checker
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-rpm
+          path: compliance-checker-linux-x86_64.rpm
+
   release:
     needs: [build-linux]
     if: startsWith(github.ref, 'refs/tags/')
@@ -61,8 +93,14 @@ jobs:
           name: linux-binary
           path: artifacts
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-rpm
+          path: artifacts
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/compliance-checker-linux-x86_64.tar.gz
+            artifacts/compliance-checker-linux-x86_64.rpm
