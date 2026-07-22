@@ -1,15 +1,62 @@
-# Building the standalone Windows app
+# Building the standalone Windows app and Linux build
 
-This turns the compliance-checker web app into a single `compliance-checker.exe`
-that runs entirely on your own machine — no browser tab, no separate server
-process to remember to start.
+This turns the compliance-checker web app into a single executable that runs
+entirely on your own machine.
+
+- **Windows**: `compliance-checker.exe` opens in its own native window
+  (pywebview) — no browser tab, no separate server process to remember to
+  start.
+- **Linux**: `compliance-checker` runs the server and opens it in your normal
+  browser (`http://127.0.0.1:8444`) — same experience as running the app
+  in dev, just as one binary instead of a venv + `npm run build` + `uvicorn`.
+
+## Recommended: let GitHub Actions build both
+
+`.github/workflows/release.yml` builds the Windows installer and the Linux
+binary on GitHub's own hosted runners — a Windows box for the `.exe`/installer,
+a Linux box for the other — and, when the trigger is a real version tag,
+publishes both as a GitHub Release automatically. This is the easiest path
+since it needs no Windows machine and no manual zip-and-copy step:
+
+1. Push a version tag: `git tag v0.1.0 && git push origin v0.1.0`.
+2. Watch the **Actions** tab on GitHub — `build-windows` and `build-linux` run
+   in parallel, then `release` attaches both files to a new Release for that
+   tag.
+3. You (or anyone) downloads `ComplianceChecker-Setup.exe` or
+   `compliance-checker-linux-x86_64.tar.gz` straight from the Release page.
+
+You can also trigger the workflow manually (Actions tab → Release → **Run
+workflow**) without a tag — that builds both artifacts as a smoke test but
+does **not** publish a Release, so it's safe to use to check the pipeline
+still works before cutting a real version.
+
+The rest of this file covers building either one by hand, useful for testing
+a change before tagging a release.
+
+## Building the Linux binary locally
+
+Unlike Windows, this can be done directly on this VM (or any Linux box) since
+PyInstaller doesn't need to cross-compile Linux-on-Linux:
+
+```
+cd frontend && npm install && npm run build && cd ..
+python3.12 -m venv .venv && .venv/bin/pip install -e ".[desktop]"
+.venv/bin/pyinstaller packaging/compliance-checker.spec
+```
+
+The finished binary lands at `dist/compliance-checker` — run it directly
+(`chmod +x` first if needed) and it prints the URL and opens your browser to
+it. This is the same `.spec` file used for Windows; which OS it targets
+depends only on which OS runs `pyinstaller`.
+
+## Building the Windows app by hand
 
 This has to be built **on Windows itself** — PyInstaller bundles the actual
 Python interpreter and native extensions for whatever OS you run it on, so a
 Linux-built exe won't work on Windows and vice versa. These steps assume a
 Windows machine with Python 3.12 and Node.js already installed.
 
-## 1. Get the code onto the Windows machine
+### 1. Get the code onto the Windows machine
 
 Copy (or `git clone`) the whole `compliance-checker` folder over from this
 VM — the easiest path is probably the same VS Code file-download trick we
@@ -17,7 +64,7 @@ used for the GNS3 appliance file earlier, just for the whole folder (zip it
 first, e.g. `zip -r compliance-checker.zip compliance-checker/` on this VM,
 then download and unzip the archive on Windows).
 
-## 2. Build the frontend
+### 2. Build the frontend
 
 ```
 cd compliance-checker\frontend
@@ -28,7 +75,7 @@ npm run build
 This produces `frontend\dist\` — the packaged app serves this directly, no
 Vite dev server involved.
 
-## 3. Set up the Python environment and install desktop dependencies
+### 3. Set up the Python environment and install desktop dependencies
 
 ```
 cd compliance-checker
@@ -39,7 +86,7 @@ pip install -e ".[desktop]"
 
 That installs the app itself plus `pywebview` and `pyinstaller`.
 
-## 4. Build the .exe
+### 4. Build the .exe
 
 ```
 pyinstaller packaging\compliance-checker.spec
@@ -50,7 +97,7 @@ stop here and just run that file directly — but it won't show up in
 Settings > Apps, won't have Start Menu shortcuts, and won't have a proper
 uninstaller. For that, do step 5.
 
-## 5. Build the installer (adds Start Menu shortcuts + uninstall support)
+### 5. Build the installer (adds Start Menu shortcuts + uninstall support)
 
 Install [Inno Setup](https://jrsoftware.org/isinfo.php) (free), then either:
 
@@ -73,17 +120,31 @@ installer:
 
 ## What happens on first run
 
-- A per-user data folder is created automatically at
-  `%APPDATA%\ComplianceChecker\` — this holds the SQLite database and an
-  auto-generated encryption key for stored credential-profile passwords.
-  Nothing needs to be configured by hand.
-- That encryption key is itself protected with Windows DPAPI
-  (`CryptProtectData`), tied to your specific Windows user account and
-  machine — so even if someone copies the whole `ComplianceChecker` data
-  folder elsewhere, the key file inside it is useless without also being
-  logged in as you on this machine. Device credential *passwords* are
-  encrypted with that key using Fernet (AES128-CBC + HMAC) before ever
-  touching the database.
+- A per-user data folder is created automatically — `%APPDATA%\ComplianceChecker\`
+  on Windows, `~/.compliance-checker/` on Linux — holding the SQLite database
+  (and, on Windows, the encrypted credential key file; see below). Nothing
+  needs to be configured by hand.
+- **Windows**: the credential encryption key is generated on first run and
+  protected with Windows DPAPI (`CryptProtectData`), tied to your specific
+  Windows user account and machine — so even if someone copies the whole
+  `ComplianceChecker` data folder elsewhere, the key file inside it is
+  useless without also being logged in as you on this machine.
+- **Linux**: the credential encryption key is generated on first run and
+  stored directly in your OS keyring (Secret Service — GNOME Keyring or
+  KWallet) via the `keyring` package, not as a file at all. This needs a real
+  desktop session with a keyring daemon running (true of any normal Linux
+  desktop). Before it even tries, a pre-flight check
+  (`src/compliance_checker/linux_preflight.py`) probes whether a Secret
+  Service is reachable at all; if not, it detects your package manager
+  (apt/dnf/yum/pacman/zypper) and offers to install `gnome-keyring` for you —
+  it only ever runs `sudo <package manager> install gnome-keyring` after you
+  type `y` at a prompt in that same terminal, never silently. If there's no
+  supported package manager, or you decline, or nothing's available to
+  install (e.g. a headless box), it falls through to the real
+  `keyring`-library error instead of a plaintext-file fallback — see
+  "If something goes wrong" below.
+- Either way, device credential *passwords* are encrypted with that key
+  using Fernet (AES128-CBC + HMAC) before ever touching the database.
 - The app starts with an empty device inventory, same as the dev version —
   use the Import page to discover/add your lab devices.
 
@@ -107,12 +168,26 @@ installer:
   they're unfamiliar to reputation-based scanners, not because of anything
   in this codebase. Code-signing would fix this longer-term but requires a
   certificate; not set up here.
+- **Linux: `keyring.errors.NoKeyringError` (or similar) on launch**: no
+  Secret Service provider is running. The pre-flight check should already
+  have offered to install `gnome-keyring` before this error ever shows up
+  (see above) — if you declined it, it wasn't able to detect your package
+  manager, or you're on a headless box with no login-session keyring to
+  unlock, install/enable one yourself (`gnome-keyring` + a login-keyring
+  unlock, or KWallet on KDE) and re-launch. Installing the daemon alone
+  isn't always enough on a headless/SSH session specifically — it typically
+  needs an actual graphical login to unlock. This is the one part of the
+  Linux build that can't be fully verified from this VM (no desktop keyring
+  session here) — same caveat as the untested Windows build below, just for
+  the other platform.
 
-This whole build/test cycle hasn't been run against a real Windows machine
-yet — treat the first attempt as a shakeout run, and paste back whatever
-error comes up if it doesn't launch cleanly on the first try. Same goes for
-the Inno Setup installer in step 5 — it's untested for the same reason
-(no Windows machine to run it on from here).
+Neither build has been run against a real end-user machine yet — the Linux
+binary has only been smoke-tested on this VM, and the Windows side hasn't
+been run against a real Windows machine at all. Treat the first attempt at
+each as a shakeout run, and paste back whatever error comes up if either
+doesn't launch cleanly on the first try. Same goes for the Inno Setup
+installer in step 5 — it's untested for the same reason (no Windows machine
+to run it on from here).
 
 ## Hardening notes
 
@@ -126,12 +201,13 @@ non-goal:
   the desktop build uses) disables `/docs`, `/redoc`, and `/openapi.json`,
   so the full API schema isn't browsable even locally. `create_mock_application()`
   (used only for local dev/demo) still has them.
-- **Credential encryption key**: auto-generated on first run, stored at
-  `%APPDATA%\ComplianceChecker\credential.key`. This protects stored
-  device-credential passwords if the database file is copied elsewhere
-  (e.g. into a synced cloud folder) — it does **not** protect against
-  another process/user with access to the same Windows account, since
-  that's already inside the same trust boundary Windows itself defines via
+- **Credential encryption key**: auto-generated on first run. On Windows,
+  stored (DPAPI-encrypted) at `%APPDATA%\ComplianceChecker\credential.key`;
+  on Linux, stored directly in the OS keyring instead of a file at all. This
+  protects stored device-credential passwords if the database file is copied
+  elsewhere (e.g. into a synced cloud folder) — it does **not** protect against
+  another process/user with access to the same account, since that's already
+  inside the same trust boundary the OS itself defines via
   `%APPDATA%`.
 - **No login screen on the app itself**: anyone who can launch the exe on
   your machine can use it — there's no separate password gate in front of

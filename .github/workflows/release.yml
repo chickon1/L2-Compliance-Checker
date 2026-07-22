@@ -1,0 +1,110 @@
+name: Release
+
+# Builds a Windows installer and a Linux binary and (only for an actual
+# version tag) publishes them as a GitHub Release. PyInstaller can't
+# cross-compile, so each build runs on its own OS via GitHub's own hosted
+# runners rather than needing a real Windows machine on hand — see
+# packaging/README.md for the equivalent manual steps.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {} # manual smoke-test run: builds both artifacts, does NOT publish a Release
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install desktop dependencies
+        run: pip install -e ".[desktop]"
+
+      - name: Build the .exe
+        run: pyinstaller packaging/compliance-checker.spec
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build the installer
+        run: iscc packaging/compliance-checker.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: packaging/installer_output/ComplianceChecker-Setup.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install desktop dependencies
+        run: pip install -e ".[desktop]"
+
+      - name: Build the binary
+        run: pyinstaller packaging/compliance-checker.spec
+
+      - name: Package as tarball
+        run: tar -C dist -czf compliance-checker-linux-x86_64.tar.gz compliance-checker
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          path: compliance-checker-linux-x86_64.tar.gz
+
+  release:
+    needs: [build-windows, build-linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # needed to create the Release and attach files with the default GITHUB_TOKEN
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-binary
+          path: artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/ComplianceChecker-Setup.exe
+            artifacts/compliance-checker-linux-x86_64.tar.gz
