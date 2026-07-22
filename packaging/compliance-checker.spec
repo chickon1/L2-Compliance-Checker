@@ -31,6 +31,8 @@ a = Analysis(
     ],
     hiddenimports=[
         "cryptography.hazmat.backends.openssl",
+        "win32crypt",  # used for DPAPI-protecting the credential key at rest
+        "win32ctypes.pywin32.win32crypt",
         *netmiko_hidden,
     ],
     hookspath=[],

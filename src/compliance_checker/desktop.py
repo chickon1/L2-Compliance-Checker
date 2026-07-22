@@ -43,24 +43,49 @@ def _app_data_dir() -> Path:
     return data_dir
 
 
+def _protect_key(raw_key: bytes) -> bytes:
+    """Encrypt the Fernet key itself using Windows DPAPI, tied to the
+    current Windows user account (CryptProtectData with no
+    CRYPTPROTECT_LOCAL_MACHINE flag scopes it to the user, matching
+    %APPDATA%'s own per-user scoping). Without this, the key file sits in
+    plaintext right next to the database it protects — anyone who copies
+    the whole data folder gets both the encrypted passwords and the key to
+    decrypt them. With DPAPI, that same copy is useless without also being
+    logged in as this exact Windows user on this exact machine."""
+    if sys.platform == "win32":
+        import win32crypt
+
+        return win32crypt.CryptProtectData(raw_key, "compliance-checker credential key", None, None, None, 0)
+    return raw_key  # non-Windows: only hit when dev-testing this launcher; the shipped build is Windows-only
+
+
+def _unprotect_key(blob: bytes) -> bytes:
+    if sys.platform == "win32":
+        import win32crypt
+
+        return win32crypt.CryptUnprotectData(blob, None, None, None, 0)[1]
+    return blob
+
+
 def _ensure_environment() -> None:
     data_dir = _app_data_dir()
 
     key_path = data_dir / "credential.key"
     if key_path.exists():
-        key = key_path.read_text().strip()
+        key_bytes = _unprotect_key(key_path.read_bytes())
     else:
-        key = Fernet.generate_key().decode()
-        key_path.write_text(key)
+        key_bytes = Fernet.generate_key()
+        key_path.write_bytes(_protect_key(key_bytes))
         try:
             # Meaningful on Linux/Mac (e.g. testing this launcher before
             # building the actual Windows exe); on Windows this just flips
             # the read-only attribute — the real access boundary there is
-            # %APPDATA% already being scoped to the owning user by NTFS.
+            # DPAPI above plus %APPDATA% already being scoped to the
+            # owning user by NTFS.
             os.chmod(key_path, 0o600)
         except OSError:
             pass
-    os.environ["CC_CREDENTIAL_KEY"] = key
+    os.environ["CC_CREDENTIAL_KEY"] = key_bytes.decode()
 
     os.environ.setdefault("CC_DB_PATH", str(data_dir / "compliance_checker.db"))
     os.environ.setdefault("CC_RULES_DIR", str(_base_dir() / "rules_data"))

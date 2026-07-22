@@ -77,6 +77,13 @@ installer:
   `%APPDATA%\ComplianceChecker\` — this holds the SQLite database and an
   auto-generated encryption key for stored credential-profile passwords.
   Nothing needs to be configured by hand.
+- That encryption key is itself protected with Windows DPAPI
+  (`CryptProtectData`), tied to your specific Windows user account and
+  machine — so even if someone copies the whole `ComplianceChecker` data
+  folder elsewhere, the key file inside it is useless without also being
+  logged in as you on this machine. Device credential *passwords* are
+  encrypted with that key using Fernet (AES128-CBC + HMAC) before ever
+  touching the database.
 - The app starts with an empty device inventory, same as the dev version —
   use the Import page to discover/add your lab devices.
 
@@ -87,6 +94,9 @@ installer:
   pulls in `collect_all("netmiko")` to cover this, but if a new netmiko
   version adds something outside that net, the error message will name the
   missing module — add it to `hiddenimports` in the `.spec` file and rebuild.
+  The same applies if `win32crypt` (used for DPAPI) fails to import — it's
+  already listed in `hiddenimports`, but pywin32 occasionally needs its
+  post-install script re-run: `python .venv\Scripts\pywin32_postinstall.py -install`.
 - **Blank window on launch**: usually means the backend thread hasn't
   finished binding to port 8444 before the window tries to load it. The
   launcher already waits 1.5s before opening the window
