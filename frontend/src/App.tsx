@@ -23,6 +23,7 @@ function App() {
             <NavLink to="/rules">Rules</NavLink>
             <NavLink to="/reports">Reports</NavLink>
           </nav>
+          <span className="app-version">v{__APP_VERSION__}</span>
         </header>
         <main>
           <Routes>

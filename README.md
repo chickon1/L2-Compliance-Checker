@@ -55,7 +55,8 @@ PYTHONPATH=src .venv/bin/uvicorn --factory compliance_checker.bootstrap:create_m
 ```text
 cd frontend
 npm install
-npm run dev       # http://localhost:5173, proxies /api to 127.0.0.1:8444
+npm run dev       # https://localhost:5173, proxies /api to 127.0.0.1:8444
+                  # (self-signed cert — click through the browser warning once)
 npm run typecheck
 npm run test
 ```
