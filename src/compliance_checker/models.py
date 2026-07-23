@@ -166,3 +166,37 @@ class DeviceChanges(Model):
 class ScheduleSettings(Model):
     enabled: bool = False
     interval_hours: int = 24
+
+
+class Role(str, Enum):
+    ADMIN = "admin"
+    USER = "user"
+
+
+class User(Model):
+    id: str
+    username: str
+    role: Role
+
+
+class UserCreate(Model):
+    username: str
+    password: str
+    role: Role
+
+
+class UserUpdate(Model):
+    username: str
+    role: Role
+    password: Optional[str] = None  # omit to keep the existing password
+
+
+class AuthCredentials(Model):
+    username: str
+    password: str
+
+
+class AuthStatus(Model):
+    setup_required: bool
+    authenticated: bool
+    user: Optional[User] = None

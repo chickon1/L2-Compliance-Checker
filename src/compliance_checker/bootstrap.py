@@ -11,11 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import create_router
+from .api import create_auth_router, create_router
 from .collectors.mock import MockConfigCollector
 from .collectors.ssh import ConfigCollector, SshConfigCollector
 from .config import load_settings
-from .models import Device, Platform
+from .models import Device, Platform, Role, User
 from .repository import Repository
 from .rule_loader import load_rules
 from .scheduler import ComplianceScheduler
@@ -77,11 +77,13 @@ def _build_app(
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        allow_origins=["https://localhost:5173"],
+        allow_credentials=True,  # needed so the session cookie is usable if ever hit cross-origin
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.include_router(create_router(service, scheduler))
+    app.include_router(create_auth_router(repository))
+    app.include_router(create_router(service, repository, scheduler))
     app.state.scheduler = scheduler
     _mount_frontend(app)  # no-op unless a built frontend is present (see docstring above)
 
@@ -114,4 +116,9 @@ def create_mock_application() -> FastAPI:
     repository = Repository(settings.db_path, settings.credential_key)
     if not repository.list_devices():
         repository.add_devices(_MOCK_DEVICES)
+    if not repository.list_users():
+        # Mock-only convenience account (same idea as seeding _MOCK_DEVICES
+        # above) so frontend dev work doesn't need the setup flow every
+        # time a fresh mock DB is used. Never seeded in create_application().
+        repository.add_user(User(id=str(uuid.uuid4()), username="admin", role=Role.ADMIN), "admin")
     return _build_app(MockConfigCollector(), repository)

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from .auth import generate_session_token, hash_password, verify_password, SESSION_TTL_DAYS
 from .credentials import Credentials, decrypt_secret, encrypt_secret
 from .models import (
     ComplianceRun,
@@ -16,9 +18,11 @@ from .models import (
     DeviceCheckResult,
     Platform,
     ResultOverride,
+    Role,
     RuleResult,
     ScheduleSettings,
     Site,
+    User,
 )
 
 _SCHEMA = """
@@ -72,16 +76,52 @@ CREATE TABLE IF NOT EXISTS schedule_settings (
     enabled INTEGER NOT NULL DEFAULT 0,
     interval_hours INTEGER NOT NULL DEFAULT 24
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 """
 
 
 class Repository:
     def __init__(self, db_path: str, credential_key: Optional[str] = None) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        self._db_path = db_path
+        self._local = threading.local()
         self._credential_key = credential_key
+
+        # One-off connection just to initialize the schema, so it's ready
+        # immediately after construction rather than on first per-thread use.
+        conn = sqlite3.connect(db_path)
+        conn.executescript(_SCHEMA)
+        conn.commit()
+        conn.close()
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        # A single sqlite3.Connection isn't safe to use concurrently from
+        # multiple threads -- FastAPI dispatches each request's sync route
+        # handlers (including the get_current_user auth dependency, which
+        # now runs on every request) to a thread pool, so a shared
+        # connection here intermittently raised
+        # "sqlite3.InterfaceError: bad parameter or other API misuse" under
+        # concurrent requests (e.g. a page firing off several API calls at
+        # once). Giving each thread its own connection to the same on-disk
+        # file avoids that entirely -- SQLite itself handles concurrent
+        # access across separate connections just fine.
+        if not hasattr(self._local, "conn"):
+            self._local.conn = sqlite3.connect(self._db_path)
+        return self._local.conn
 
     # Runs / results
 
@@ -400,4 +440,104 @@ class Repository:
                                                interval_hours = excluded.interval_hours""",
             (int(settings.enabled), settings.interval_hours),
         )
+        self._conn.commit()
+
+    # Users
+
+    def add_user(self, user: User, password: str) -> None:
+        self._conn.execute(
+            "INSERT INTO users (id, username, password_hash, role) VALUES (?, ?, ?, ?)",
+            (user.id, user.username, hash_password(password), user.role.value),
+        )
+        self._conn.commit()
+
+    def list_users(self) -> List[User]:
+        rows = self._conn.execute("SELECT id, username, role FROM users").fetchall()
+        return [User(id=r[0], username=r[1], role=Role(r[2])) for r in rows]
+
+    def get_user(self, user_id: str) -> User:
+        row = self._conn.execute(
+            "SELECT id, username, role FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(user_id)
+        return User(id=row[0], username=row[1], role=Role(row[2]))
+
+    def get_user_by_username(self, username: str) -> Optional[User]:
+        row = self._conn.execute(
+            "SELECT id, username, role FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        return User(id=row[0], username=row[1], role=Role(row[2])) if row else None
+
+    def count_admins(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM users WHERE role = ?", (Role.ADMIN.value,)
+        ).fetchone()
+        return row[0]
+
+    def update_user(
+        self, user_id: str, username: str, role: Role, password: Optional[str]
+    ) -> None:
+        if role != Role.ADMIN and self.get_user(user_id).role == Role.ADMIN and self.count_admins() <= 1:
+            raise ValueError("Cannot demote the last remaining admin")
+        if password is not None:
+            cursor = self._conn.execute(
+                "UPDATE users SET username = ?, role = ?, password_hash = ? WHERE id = ?",
+                (username, role.value, hash_password(password), user_id),
+            )
+        else:
+            cursor = self._conn.execute(
+                "UPDATE users SET username = ?, role = ? WHERE id = ?",
+                (username, role.value, user_id),
+            )
+        if cursor.rowcount == 0:
+            raise KeyError(user_id)
+        self._conn.commit()
+
+    def delete_user(self, user_id: str) -> None:
+        if self.get_user(user_id).role == Role.ADMIN and self.count_admins() <= 1:
+            raise ValueError("Cannot delete the last remaining admin")
+        cursor = self._conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        if cursor.rowcount == 0:
+            raise KeyError(user_id)
+        self._conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        self._conn.commit()
+
+    def verify_login(self, username: str, password: str) -> Optional[User]:
+        row = self._conn.execute(
+            "SELECT id, username, password_hash, role FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if row is None or not verify_password(password, row[2]):
+            return None
+        return User(id=row[0], username=row[1], role=Role(row[3]))
+
+    # Sessions
+
+    def create_session(self, user_id: str) -> str:
+        token = generate_session_token()
+        expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_TTL_DAYS)
+        self._conn.execute(
+            "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+            (token, user_id, expires_at.isoformat()),
+        )
+        self._conn.commit()
+        return token
+
+    def get_session_user(self, token: str) -> Optional[User]:
+        row = self._conn.execute(
+            "SELECT user_id, expires_at FROM sessions WHERE token = ?", (token,)
+        ).fetchone()
+        if row is None:
+            return None
+        user_id, expires_at = row
+        if datetime.fromisoformat(expires_at) < datetime.now(timezone.utc):
+            self.delete_session(token)
+            return None
+        try:
+            return self.get_user(user_id)
+        except KeyError:
+            return None
+
+    def delete_session(self, token: str) -> None:
+        self._conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
         self._conn.commit()

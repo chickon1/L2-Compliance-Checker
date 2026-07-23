@@ -85,11 +85,55 @@ h1 {
   background: #183144;
 }
 
-.app-version {
+.logout-button {
   margin-left: auto;
+}
+
+.app-version {
   color: var(--text-muted);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+}
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 320px;
+  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.auth-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.auth-card input {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.auth-subtitle {
+  color: var(--text-muted);
+  margin: -4px 0 4px;
+  font-size: 13px;
 }
 
 main {

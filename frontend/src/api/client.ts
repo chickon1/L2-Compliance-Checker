@@ -114,9 +114,36 @@ export interface ScheduleSettings {
   interval_hours: number;
 }
 
+export type Role = 'admin' | 'user';
+
+export interface User {
+  id: string;
+  username: string;
+  role: Role;
+}
+
+export interface UserCreate {
+  username: string;
+  password: string;
+  role: Role;
+}
+
+export interface UserUpdate {
+  username: string;
+  role: Role;
+  password: string | null;
+}
+
+export interface AuthStatus {
+  setup_required: boolean;
+  authenticated: boolean;
+  user: User | null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     ...init,
   });
   if (!response.ok) {
@@ -192,4 +219,34 @@ export const api = {
     request<void>(`/devices/${deviceId}/results/${ruleId}/override`, {
       method: 'DELETE',
     }),
+};
+
+export const authApi = {
+  status: () => request<AuthStatus>('/auth/status'),
+  setup: (username: string, password: string) =>
+    request<User>('/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  login: (username: string, password: string) =>
+    request<User>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () => request<void>('/auth/logout', { method: 'POST' }),
+};
+
+export const usersApi = {
+  list: () => request<User[]>('/users'),
+  create: (user: UserCreate) =>
+    request<User>('/users', {
+      method: 'POST',
+      body: JSON.stringify(user),
+    }),
+  update: (userId: string, update: UserUpdate) =>
+    request<User>(`/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(update),
+    }),
+  remove: (userId: string) => request<void>(`/users/${userId}`, { method: 'DELETE' }),
 };
