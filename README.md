@@ -6,7 +6,7 @@ per device and per rule in the browser.
 
 This is a separate app from L2Workbench: separate codebase, separate port
 (8444 backend / 5173 frontend dev server, vs. L2Workbench's 8443), and no
-shared code. It targets the GNS3 lab on `192.168.100.0/24`.
+shared code.
 
 ## Development
 
