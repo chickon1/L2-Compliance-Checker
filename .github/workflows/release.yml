@@ -16,6 +16,8 @@ on:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pkgver.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
@@ -65,21 +67,23 @@ jobs:
           gem install --no-document fpm
 
       - name: Package as rpm
+        env:
+          VERSION: ${{ steps.pkgver.outputs.version }}
         run: |
           fpm -s dir -t rpm \
             --name compliance-checker \
-            --version "${{ steps.pkgver.outputs.version }}" \
+            --version "$VERSION" \
             --license MIT \
             --architecture x86_64 \
             --description "Network gear STIG compliance checker" \
             --url "https://github.com/chickon1/L2-Compliance-Checker" \
-            --package compliance-checker-linux-x86_64.rpm \
+            --package "compliance-checker-${VERSION}-1.x86_64.rpm" \
             dist/compliance-checker=/usr/bin/compliance-checker
 
       - uses: actions/upload-artifact@v7
         with:
           name: linux-rpm
-          path: compliance-checker-linux-x86_64.rpm
+          path: compliance-checker-${{ steps.pkgver.outputs.version }}-1.x86_64.rpm
 
   release:
     needs: [build-linux]
@@ -103,4 +107,4 @@ jobs:
         with:
           files: |
             artifacts/compliance-checker-linux-x86_64.tar.gz
-            artifacts/compliance-checker-linux-x86_64.rpm
+            artifacts/compliance-checker-${{ needs.build-linux.outputs.version }}-1.x86_64.rpm

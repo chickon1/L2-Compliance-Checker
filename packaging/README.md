@@ -3,6 +3,14 @@
 This turns the compliance-checker web app into a single executable that runs
 entirely on your own machine.
 
+**This packaged build is meant to run on your local machine only — it is not
+meant to be reachable remotely.** It binds to `127.0.0.1` only and has no
+login screen in front of it, so anyone who can reach it can use it. Don't
+open firewall ports to expose this to a network; if you want a real
+network-accessible deployment later, that's a different, deliberate change
+(see "Hardening notes" below), not something to route around by poking
+holes in a firewall.
+
 - **Linux**: `compliance-checker` runs the server and opens it in your normal
   browser (`http://127.0.0.1:8444`) — same experience as running the app
   in dev, just as one binary instead of a venv + `npm run build` + `uvicorn`.
@@ -24,7 +32,8 @@ GitHub Release automatically:
 3. You (or anyone) downloads either straight from the Release page:
    - `compliance-checker-linux-x86_64.tar.gz` — the raw binary, works on any
      Linux distro, no package manager involved (untar, `chmod +x`, run).
-   - `compliance-checker-linux-x86_64.rpm` — for RPM-based distros (Rocky,
+   - `compliance-checker-<version>-1.x86_64.rpm` (e.g.
+     `compliance-checker-0.1.0-1.x86_64.rpm`) — for RPM-based distros (Rocky,
      Fedora, RHEL — i.e. this VM). Installs to `/usr/bin/compliance-checker`,
      shows up in `dnf list installed`, and uninstalls cleanly with
      `sudo dnf remove compliance-checker`.
@@ -75,13 +84,15 @@ fpm -s dir -t rpm \
   --architecture x86_64 \
   --description "Network gear STIG compliance checker" \
   --url "https://github.com/chickon1/L2-Compliance-Checker" \
-  --package compliance-checker-linux-x86_64.rpm \
+  --package compliance-checker-0.1.0-1.x86_64.rpm \
   dist/compliance-checker=/usr/bin/compliance-checker
 ```
 
-That produces `compliance-checker-linux-x86_64.rpm`, installing the binary
-to `/usr/bin/compliance-checker`. The CI pipeline does the same thing (on
-Ubuntu, where the equivalent package is `rpm` rather than `rpm-build`) and
+That produces `compliance-checker-0.1.0-1.x86_64.rpm` (standard RPM naming:
+`name-version-release.arch.rpm`), installing the binary to
+`/usr/bin/compliance-checker`. The CI pipeline does the same thing (on
+Ubuntu, where the equivalent package is `rpm` rather than `rpm-build`),
+deriving the version from the pushed git tag instead of hardcoding it, and
 attaches the result to each GitHub Release.
 
 ## Building the Windows app by hand
@@ -207,9 +218,13 @@ doesn't launch cleanly on the first try.
 What's already in place for the packaged build, and what's a deliberate
 non-goal:
 
-- **Loopback-only**: the backend binds to `127.0.0.1`, never a real network
-  interface — nothing outside the machine can reach it, regardless of
-  firewall state.
+- **Loopback-only, by design, not just by default**: the backend binds to
+  `127.0.0.1`, never a real network interface — nothing outside the machine
+  can reach it, regardless of firewall state. This is intentional: the app
+  is meant to run on your local machine only, not be exposed to a network.
+  Don't "fix" firewall/routing issues to make this reachable remotely —
+  that would be working around a deliberate security boundary, not fixing a
+  bug.
 - **No interactive API docs in production**: `create_application()` (what
   the desktop build uses) disables `/docs`, `/redoc`, and `/openapi.json`,
   so the full API schema isn't browsable even locally. `create_mock_application()`
