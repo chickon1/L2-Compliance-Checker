@@ -27,7 +27,7 @@
     "oxlint": "^1.71.0",
     "react-router-dom": "^7.18.2",
     "typescript": "~6.0.2",
-    "vite": "^8.1.1",
+    "vite": "^8.3.5",
     "vitest": "^4.1.10"
   }
 }
